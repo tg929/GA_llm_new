@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 from rdkit import Chem
 from tdc import Oracle
-PROJECT_ROOT = "/data1/tgy/GA_llm"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
 # 导入Autogrow过滤器
@@ -101,7 +101,7 @@ def evaluate_population(smiles_list, qed_eval, sa_eval):
 def main():
     parser = argparse.ArgumentParser(description='Population Filter Parameters')
     parser.add_argument("-i", "--input", required=True, help="输入文件路径")
-    parser.add_argument("-o", "--output", default="/data1/tgy/GA_llm/output/generation_0_filtered.smi", help="输出文件路径")
+    parser.add_argument("-o", "--output", default=os.path.join(PROJECT_ROOT, "output/generation_0_filtered.smi"), help="输出文件路径")
     
     # 添加过滤器参数
     parser.add_argument('--LipinskiStrictFilter', action='store_true', default=False,

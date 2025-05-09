@@ -13,6 +13,10 @@ from utils.train_utils import get_mol
 from utils.chem_utils import reconstruct
 from tqdm import tqdm
 
+# 设置项目根目录
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRAGMENT_GPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 #当前地址：/data1/tgy/GA_llm/fragment_GPT
 #vocab.txt地址：/data1/tgy/GA_llm/fragment_GPT/vocabs/vocab.txt
 
@@ -123,7 +127,7 @@ def main_test(args):
 
     test_names = "test"
 
-    tokenizer = SmilesTokenizer('/data1/tgy/GA_llm/fragment_GPT/vocabs/vocab.txt')
+    tokenizer = SmilesTokenizer(os.path.join(FRAGMENT_GPT_DIR, 'vocabs/vocab.txt'))
     tokenizer.bos_token = "[BOS]"
     tokenizer.bos_token_id = tokenizer.convert_tokens_to_ids("[BOS]")
     tokenizer.eos_token = "[EOS]"
@@ -133,11 +137,13 @@ def main_test(args):
 
     mconf = GPTConfig(vocab_size=tokenizer.vocab_size, n_layer=12, n_head=12, n_embd=768)
     model = GPT(mconf).to(device)
-    checkpoint = torch.load(f'/data1/tgy/GA_llm/fragment_GPT/weights/fragpt.pt', weights_only=True)   
+    checkpoint = torch.load(os.path.join(FRAGMENT_GPT_DIR, 'weights/fragpt.pt'), weights_only=True)   
     model.load_state_dict(checkpoint)
     start_time = time.time()
+    
+    output_dir = os.path.join(PROJECT_ROOT, "fragment_GPT/output")
     Test(model, tokenizer, max_seq_len=1024, temperature=1.0, top_k=None, stream=False, rp=1., kv_cache=True,
-         is_simulation=True, device=device, output_file_path="/data1/tgy/GA_llm/fragment_GPT/output", seed=seed_value, input_file=args.input_file)
+         is_simulation=True, device=device, output_file_path=output_dir, seed=seed_value, input_file=args.input_file)
     end_time = time.time()
     elapsed_time = end_time - start_time
 

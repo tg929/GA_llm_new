@@ -1,10 +1,13 @@
 import os
 import time
 import subprocess
+import sys
+
+# 获取当前文件的目录路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(current_dir)
 
 start_time = time.time()  # 记录开始时间
-
-os.chdir('/data1/ytg/GA_llm/fragment_GPT')
 
 for i in range(30):
     if i < 15:
@@ -20,3 +23,6 @@ end_time = time.time()  # 记录结束时间
 
 total_time = end_time - start_time  # 计算总时间
 print(f"Total execution time: {total_time:.2f} seconds")
+
+# 执行命令
+os.system("python mcts_decode_new_40.py")

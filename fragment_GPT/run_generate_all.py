@@ -1,10 +1,13 @@
 import os
+import sys
 import time
 import subprocess
 
-start_time = time.time()  # 记录开始时间
+# 获取当前文件的目录路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(current_dir)
 
-os.chdir('/data1/ytg/GA_llm/fragment_GPT')
+start_time = time.time()  # 记录开始时间
 
 for i in range(10):
     cmd = 'python3 generate_all.py' + ' ' + f'--seed {i}'

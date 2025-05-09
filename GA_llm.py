@@ -37,7 +37,7 @@ from functools import partial
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 # 设置项目根目录
-PROJECT_ROOT = "/data1/tgy/GA_llm"
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
 # 配置日志
@@ -687,21 +687,23 @@ def main():
     parser = argparse.ArgumentParser(description='GA_llm - 分子进化与生成流程')
     
     # 基本参数
-    parser.add_argument('--generations', type=int, default=5, 
-                        help='进化代数(不包括第0代,总共会生成6代:generation_0到generation_5)')
-    parser.add_argument('--output_dir', type=str, default='/data1/tgy/GA_llm/output',
-                        help='输出目录')
-    parser.add_argument('--initial_population', type=str, 
-                        default='/data1/tgy/GA_llm/datasets/source_compounds/naphthalene_smiles.smi',
-                        help='初始种群文件路径')
+    parser.add_argument('--generations', type=int, default=5,
+                        help='进化代数 (默认: 5)')
+    parser.add_argument('--population_size', type=int, default=100,
+                        help='每代种群大小 (默认: 100)')
+    parser.add_argument('--output_dir', type=str, default=os.path.join(PROJECT_ROOT, 'output'),
+                        help='输出目录 (默认: output/)')
+    parser.add_argument('--source_file', type=str, 
+                        default=os.path.join(PROJECT_ROOT, 'datasets/source_compounds/naphthalene_smiles.smi'),
+                        help='初始分子文件 (默认: datasets/source_compounds/naphthalene_smiles.smi)')
     
     # 对接参数
-    parser.add_argument('--receptor_file', type=str,
-                        default='/data1/tgy/GA_llm/tutorial/PARP/4r6eA_PARP1_prepared.pdb',
-                        help='受体PDB文件路径')
-    parser.add_argument('--mgltools_path', type=str,
-                        default='/data1/tgy/GA_llm/mgltools_x86_64Linux2_1.5.6',
-                        help='MGLTools安装路径')
+    parser.add_argument('--receptor_file', type=str, 
+                        default=os.path.join(PROJECT_ROOT, 'tutorial/PARP/4r6eA_PARP1_prepared.pdb'),
+                        help='受体蛋白文件 (默认: tutorial/PARP/4r6eA_PARP1_prepared.pdb)')
+    parser.add_argument('--mgltools_path', type=str, 
+                        default=os.path.join(PROJECT_ROOT, 'mgltools_x86_64Linux2_1.5.6'),
+                        help='MGLTools安装路径 (默认: mgltools_x86_64Linux2_1.5.6/)')
     
     # 进化参数
     parser.add_argument('--num_crossovers', type=int, default=50,

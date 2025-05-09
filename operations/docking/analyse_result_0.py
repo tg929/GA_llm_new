@@ -4,6 +4,9 @@
 import os
 import argparse
 import numpy as np
+import sys
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def parse_smi_file(file_path):
     """解析对接结果文件，返回分子列表和得分列表"""
@@ -55,7 +58,7 @@ def main():
     parser = argparse.ArgumentParser(description='Analyze docking results')
     parser.add_argument('-i', '--input', required=True, 
                         help='Input SMILES file with docking scores')
-    parser.add_argument('-o', '--output', default='/data1/tgy/GA_llm/operations/ranking',
+    parser.add_argument('-o', '--output', default=os.path.join(PROJECT_ROOT, 'operations/ranking'),
                         help='Output directory for results')
     parser.add_argument('-p', '--prefix', default='result',
                         help='Prefix for output files')

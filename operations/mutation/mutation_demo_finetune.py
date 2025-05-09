@@ -1,6 +1,6 @@
 import sys
 import os
-PROJECT_ROOT = "/data1/tgy/GA_llm"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 from tdc import Evaluator, Oracle  
 import random
@@ -75,16 +75,16 @@ def main():
     parser.add_argument("--input_file", "-i", type=str, required=True,
                       help="输入分子文件路径")
     parser.add_argument("--llm_generation_file", "-l", type=str, 
-                      default="/data1/tgy/GA_llm/fragment_GPT/output/test0/crossovered0_frags_new_0.smi",
+                      default=os.path.join(PROJECT_ROOT, "fragment_GPT/output/test0/crossovered0_frags_new_0.smi"),
                       help="LLM生成分子文件路径")
     parser.add_argument("--output_file", "-o", type=str, 
-                      default="/data1/tgy/GA_llm/output/generation_0_mutationed.smi",
+                      default=os.path.join(PROJECT_ROOT, "output/generation_0_mutationed.smi"),
                       help="输出文件路径")
     parser.add_argument("--num_mutations", type=int, default=1,
                       help="变异尝试次数")
     parser.add_argument("--max_mutations", type=int, default=2,
                       help="每个父代最大变异尝试次数")
-    parser.add_argument("--output_dir", type=str, default="/data1/tgy/GA_llm/output",
+    parser.add_argument("--output_dir", type=str, default=os.path.join(PROJECT_ROOT, "output"),
                       help="输出目录")
     
     args = parser.parse_args()
@@ -120,9 +120,9 @@ def main():
     # 变异参数配置
     vars = {
         'rxn_library': 'all_rxns',
-        'rxn_library_file': '/data1/tgy/GA_llm/autogrow/operators/mutation/smiles_click_chem/reaction_libraries/all_rxns/All_Rxns_rxn_library.json',
-        'function_group_library': '/data1/tgy/GA_llm/autogrow/operators/mutation/smiles_click_chem/reaction_libraries/all_rxns/All_Rxns_functional_groups.json',
-        'complementary_mol_directory': '/data1/tgy/GA_llm/autogrow/operators/mutation/smiles_click_chem/reaction_libraries/all_rxns/complementary_mol_dir',
+        'rxn_library_file': os.path.join(PROJECT_ROOT, 'autogrow/operators/mutation/smiles_click_chem/reaction_libraries/all_rxns/All_Rxns_rxn_library.json'),
+        'function_group_library': os.path.join(PROJECT_ROOT, 'autogrow/operators/mutation/smiles_click_chem/reaction_libraries/all_rxns/All_Rxns_functional_groups.json'),
+        'complementary_mol_directory': os.path.join(PROJECT_ROOT, 'autogrow/operators/mutation/smiles_click_chem/reaction_libraries/all_rxns/complementary_mol_dir'),
         'filter_object_dict': {
             'Structure_check': lambda mol: mol is not None
         },

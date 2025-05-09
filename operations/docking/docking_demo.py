@@ -1,6 +1,6 @@
 import os
 import sys
-PROJECT_ROOT = "/data1/tgy/GA_llm"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 import logging
 import argparse
@@ -68,7 +68,7 @@ class DockingExecutor:
             'mgl_python': os.path.join(self.mgltools_path, "bin/pythonsh"),
             'prepare_receptor4.py': os.path.join(self.mgltools_path, "MGLToolsPckgs/AutoDockTools/Utilities24/prepare_receptor4.py"),
             'prepare_ligand4.py': os.path.join(self.mgltools_path, "MGLToolsPckgs/AutoDockTools/Utilities24/prepare_ligand4.py"), 
-            'docking_executable': "/data1/tgy/GA_llm/autogrow/docking/docking_executables/vina/autodock_vina_1_1_2_linux_x86/bin/vina",
+            'docking_executable': os.path.join(PROJECT_ROOT, "autogrow/docking/docking_executables/vina/autodock_vina_1_1_2_linux_x86/bin/vina"),
             'number_of_processors': 1,
             'debug_mode': False,
             'timeout_vs_gtimeout': 'timeout',  

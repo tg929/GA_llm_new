@@ -1,6 +1,6 @@
 import sys
 import os
-PROJECT_ROOT = "/data1/tgy/GA_llm"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 from tdc import Evaluator, Oracle  
 import random
@@ -74,16 +74,16 @@ def main():
     parser.add_argument("--source_compound_file", "-s", type=str, required=True,
                       help="源化合物文件路径")
     parser.add_argument("--llm_generation_file", "-l", type=str, 
-                      default="/data1/tgy/GA_llm/fragment_GPT/output/test0/crossovered0_frags_new_0.smi",
+                      default=os.path.join(PROJECT_ROOT, "fragment_GPT/output/test0/crossovered0_frags_new_0.smi"),
                       help="LLM生成分子文件路径")
     parser.add_argument("--output_file", "-o", type=str, 
-                      default="/data1/tgy/GA_llm/output/generation_crossover_0.smi",
+                      default=os.path.join(PROJECT_ROOT, "output/generation_crossover_0.smi"),
                       help="输出文件路径")
     parser.add_argument("--crossover_rate", type=float, default=0.8,
                       help="交叉率")
     parser.add_argument("--crossover_attempts", type=int, default=1,
                       help="交叉尝试次数")
-    parser.add_argument("--output_dir", type=str, default="/data1/tgy/GA_llm/output",
+    parser.add_argument("--output_dir", type=str, default=os.path.join(PROJECT_ROOT, "output"),
                       help="输出目录")
     
     args = parser.parse_args()
