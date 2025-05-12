@@ -34,3 +34,4 @@ datasets/decompose/decompose_results/*.smi
 *.txt
 /datasets
 .vscode
+*.sh
