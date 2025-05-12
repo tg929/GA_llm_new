@@ -687,7 +687,7 @@ def main():
     parser = argparse.ArgumentParser(description='GA_llm - 分子进化与生成流程')
     
     # 基本参数
-    parser.add_argument('--generations', type=int, default=5,
+    parser.add_argument('--generations', type=int, default=5, 
                         help='进化代数 (默认: 5)')
     parser.add_argument('--population_size', type=int, default=100,
                         help='每代种群大小 (默认: 100)')
@@ -698,10 +698,10 @@ def main():
                         help='初始分子文件 (默认: datasets/source_compounds/naphthalene_smiles.smi)')
     
     # 对接参数
-    parser.add_argument('--receptor_file', type=str, 
+    parser.add_argument('--receptor_file', type=str,
                         default=os.path.join(PROJECT_ROOT, 'tutorial/PARP/4r6eA_PARP1_prepared.pdb'),
                         help='受体蛋白文件 (默认: tutorial/PARP/4r6eA_PARP1_prepared.pdb)')
-    parser.add_argument('--mgltools_path', type=str, 
+    parser.add_argument('--mgltools_path', type=str,
                         default=os.path.join(PROJECT_ROOT, 'mgltools_x86_64Linux2_1.5.6'),
                         help='MGLTools安装路径 (默认: mgltools_x86_64Linux2_1.5.6/)')
     
