@@ -513,9 +513,9 @@ def calculate_and_print_stats(docking_output, generation_num, logger):
     # 输出到控制台
     print(stats_message)
 
-def select_seeds_for_next_generation(docking_output, seed_output, top_mols, diversity_mols, logger):
-    """基于适应度和多样性选择种子分子"""
-    logger.info(f"开始选择种子分子: 从 {docking_output} 选择 {top_mols} 个适应度种子和 {diversity_mols} 个多样性种子")
+def select_seeds_for_next_generation(docking_output, seed_output, top_mols, diversity_mols, logger, elitism_mols=1, prev_elite_mols=None):
+    """基于适应度和多样性选择种子分子，支持精英保留机制"""
+    logger.info(f"开始选择种子分子: 从 {docking_output} 选择 {top_mols} 个适应度种子和 {diversity_mols} 个多样性种子，保留 {elitism_mols} 个精英分子")
     
     # 读取对接结果
     molecules = []
@@ -539,14 +539,37 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
     # 按分数排序（对接分数越小越好）
     sorted_indices = np.argsort(scores)
     sorted_molecules = [molecules[i] for i in sorted_indices]
+    sorted_scores = [scores[i] for i in sorted_indices]
     
-    # 选择适应度种子
-    fitness_seeds = sorted_molecules[:top_mols]
+    # 选择当前代的精英分子
+    current_elite_mols = sorted_molecules[:elitism_mols]
+    current_elite_scores = sorted_scores[:elitism_mols]
+    
+    # 如果有上一代的精英分子，比较并选择最好的
+    if prev_elite_mols:
+        # 将上一代精英分子与当前代精英分子合并并排序
+        all_elite_mols = list(prev_elite_mols.keys()) + current_elite_mols
+        all_elite_scores = list(prev_elite_mols.values()) + current_elite_scores
+        
+        # 按分数排序
+        elite_indices = np.argsort(all_elite_scores)
+        best_elite_mols = [all_elite_mols[i] for i in elite_indices[:elitism_mols]]
+        best_elite_scores = [all_elite_scores[i] for i in elite_indices[:elitism_mols]]
+        
+        # 创建新的精英分子字典
+        new_elite_mols = {mol: score for mol, score in zip(best_elite_mols, best_elite_scores)}
+    else:
+        # 第一代，直接使用当前代的精英分子
+        new_elite_mols = {mol: score for mol, score in zip(current_elite_mols, current_elite_scores)}
+    
+    # 从剩余分子中选择适应度种子（排除已选择的精英分子）
+    remaining_molecules = [mol for mol in sorted_molecules if mol not in new_elite_mols]
+    fitness_seeds = remaining_molecules[:top_mols]
     logger.info(f"已选择 {len(fitness_seeds)} 个适应度种子")
     
     # 选择多样性种子
     diversity_seeds = []
-    remaining_molecules = sorted_molecules[top_mols:]
+    remaining_molecules = remaining_molecules[top_mols:]
     
     if diversity_mols > 0 and remaining_molecules:
         # 使用简单的最大最小距离算法选择多样性分子
@@ -582,8 +605,8 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
     
     logger.info(f"已选择 {len(diversity_seeds)} 个多样性种子")
     
-    # 合并所有种子
-    all_seeds = fitness_seeds + diversity_seeds
+    # 合并所有种子（精英分子 + 适应度种子 + 多样性种子）
+    all_seeds = list(new_elite_mols.keys()) + fitness_seeds + diversity_seeds
     
     # 保存种子分子
     with open(seed_output, 'w') as f:
@@ -591,10 +614,10 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
             f.write(f"{mol}\n")
     
     logger.info(f"种子选择完成，共选择 {len(all_seeds)} 个分子，保存至: {seed_output}")
-    return seed_output
+    return seed_output, new_elite_mols
 
-def run_evolution(generation_num, args, logger):
-    """执行一次完整的进化迭代，严格按照用户新需求"""
+def run_evolution(generation_num, args, logger, prev_elite_mols=None):
+    """执行一次完整的进化迭代，支持精英保留机制"""
     logger.info(f"开始第 {generation_num} 代进化")
     output_base = os.path.join(args.output_dir, f"generation_{generation_num}")
     os.makedirs(output_base, exist_ok=True)
@@ -609,8 +632,11 @@ def run_evolution(generation_num, args, logger):
         # 选seed
         diversity_mols = max(0, args.diversity_mols_to_seed_first_generation - (generation_num * args.diversity_seed_depreciation_per_gen))
         seed_output = os.path.join(output_base, f"generation_{generation_num}_seeds.smi")
-        select_seeds_for_next_generation(docking_output, seed_output, args.top_mols_to_seed_next_generation, diversity_mols, logger)
-        return seed_output
+        seed_output, new_elite_mols = select_seeds_for_next_generation(
+            docking_output, seed_output, args.top_mols_to_seed_next_generation, 
+            diversity_mols, logger, args.elitism_mols_to_next_generation
+        )
+        return seed_output, new_elite_mols
     else:
         # 1. 读取上一代seed
         prev_seed_file = os.path.join(args.output_dir, f"generation_{generation_num-1}", f"generation_{generation_num-1}_seeds.smi")
@@ -626,11 +652,19 @@ def run_evolution(generation_num, args, logger):
         # 5. 合并新种群
         new_population_file = os.path.join(output_base, f"generation_{generation_num}_new_population.smi")
         with open(new_population_file, 'w') as fout:
+            # 首先写入精英分子（如果有的话）
+            if prev_elite_mols:
+                for mol, score in prev_elite_mols.items():
+                    fout.write(f"{mol}\n")
+                logger.info(f"已将 {len(prev_elite_mols)} 个精英分子加入新种群")
+            
+            # 然后写入交叉和变异产生的新分子
             for fname in [crossover_output, mutation_output]:
                 with open(fname, 'r') as fin:
                     for line in fin:
                         if line.strip():
                             fout.write(line)
+        
         # 6. docking+scoring
         docking_output = os.path.join(output_base, f"generation_{generation_num}_docked.smi")
         run_docking(new_population_file, docking_output, args.receptor_file, args.mgltools_path, logger, args.number_of_processors, args.multithread_mode)
@@ -638,8 +672,11 @@ def run_evolution(generation_num, args, logger):
         # 7. 选seed
         diversity_mols = max(0, args.diversity_mols_to_seed_first_generation - (generation_num * args.diversity_seed_depreciation_per_gen))
         seed_output = os.path.join(output_base, f"generation_{generation_num}_seeds.smi")
-        select_seeds_for_next_generation(docking_output, seed_output, args.top_mols_to_seed_next_generation, diversity_mols, logger)
-        return seed_output
+        seed_output, new_elite_mols = select_seeds_for_next_generation(
+            docking_output, seed_output, args.top_mols_to_seed_next_generation, 
+            diversity_mols, logger, args.elitism_mols_to_next_generation, prev_elite_mols
+        )
+        return seed_output, new_elite_mols
 
 def main():
     # 解析命令行参数
@@ -679,6 +716,8 @@ def main():
                        help='第0代基于多样性选择进入下一代的分子数量')
     parser.add_argument('--diversity_seed_depreciation_per_gen', type=int, default=2,
                        help='每代多样性种子数量的递减值')
+    parser.add_argument('--elitism_mols_to_next_generation', type=int, default=1,
+                       help='每代保留的精英分子数量，这些分子将直接进入下一代而不进行进化操作')
     
     # 并行处理参数
     parser.add_argument('--number_of_processors', '-p', type=int, default=-1,
@@ -759,12 +798,13 @@ def main():
         logger.info(f"第0代将通过交叉生成 {args.number_of_crossovers_first_generation} 个新分子和 通过变异生成{args.number_of_mutants_first_generation} 个新分子")
         start_time = time.time()
         
-        run_evolution(0, args, logger)
+        final_output, elite_mols = run_evolution(0, args, logger)
         
         end_time = time.time()
         logger.info(f"第0代完成,耗时: {end_time - start_time:.2f}秒")
     except Exception as e:
         logger.error(f"第0代失败: {str(e)}")
+        elite_mols = None
     
     # 执行后续5代进化
     for gen in range(1, args.generations + 1):
@@ -783,7 +823,7 @@ def main():
                         limit_population_size(prev_gen_file, args.max_population)
                         logger.info(f"第{gen-1}代种群已从{prev_count}限制为{args.max_population}")
             
-            final_output = run_evolution(gen, args, logger)
+            final_output, elite_mols = run_evolution(gen, args, logger, elite_mols)
             
             end_time = time.time()
             logger.info(f"第 {gen} 代进化完成，耗时: {end_time - start_time:.2f}秒")
