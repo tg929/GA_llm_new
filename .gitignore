@@ -35,3 +35,4 @@ datasets/decompose/decompose_results/*.smi
 /datasets
 .vscode
 *.sh
+batch_*
