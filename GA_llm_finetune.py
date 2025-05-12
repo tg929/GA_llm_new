@@ -673,7 +673,7 @@ def main():
                        help='控制每代种群的最大数量,设置为0表示不限制(可能导致种群规模迅速增长）')
     
     # 种子选择参数
-    parser.add_argument('--top_mols_to_seed_next_generation', type=int, default=50,
+    parser.add_argument('--top_mols_to_seed_next_generation', type=int, default=10,
                        help='每代基于适应度选择进入下一代的分子数量')
     parser.add_argument('--diversity_mols_to_seed_first_generation', type=int, default=10,
                        help='第0代基于多样性选择进入下一代的分子数量')
