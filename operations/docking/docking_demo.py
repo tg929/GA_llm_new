@@ -311,10 +311,10 @@ class DockingExecutor:
 # 主函数
 def main():
     parser = argparse.ArgumentParser(description='Molecular Docking Pipeline')
-    parser.add_argument('-i', '--input', default="/data1/tgy/GA_llm/output/generation_0_filtered.smi", help='Input SMILES file')#/data1/tgy/GA_llm/output/generation_0_filtered.smi
-    parser.add_argument('-r', '--receptor', default="/data1/tgy/GA_llm/tutorial/PARP/4r6eA_PARP1_prepared.pdb", help='Receptor PDB file path')#/data1/tgy/GA_llm/tutorial/PARP/4r6eA_PARP1_prepared.pdb
-    parser.add_argument('-o', '--output', default="/data1/tgy/GA_llm/output/docking_results/generation_0_docked.smi", help='Output file path')#/data1/tgy/GA_llm/output/docking_results/generation_o_docked.smi
-    parser.add_argument('-m', '--mgltools', default="/data1/tgy/GA_llm/mgltools_x86_64Linux2_1.5.6", help='MGLTools installation path')
+    parser.add_argument('-i', '--input', default="output/generation_0_filtered.smi", help='Input SMILES file')#/data1/tgy/GA_llm/output/generation_0_filtered.smi
+    parser.add_argument('-r', '--receptor', default="tutorial/PARP/4r6eA_PARP1_prepared.pdb", help='Receptor PDB file path')#/data1/tgy/GA_llm/tutorial/PARP/4r6eA_PARP1_prepared.pdb
+    parser.add_argument('-o', '--output', default="output/docking_results/generation_0_docked.smi", help='Output file path')#/data1/tgy/GA_llm/output/docking_results/generation_o_docked.smi
+    parser.add_argument('-m', '--mgltools', default="mgltools_x86_64Linux2_1.5.6", help='MGLTools installation path')
     parser.add_argument('--max_failures', type=int, default=5, help='最大连续失败次数，超过此数将暂停并提示')
     
     args = parser.parse_args()

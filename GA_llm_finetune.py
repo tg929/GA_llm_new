@@ -541,7 +541,7 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
     sorted_molecules = [molecules[i] for i in sorted_indices]
     sorted_scores = [scores[i] for i in sorted_indices]
     
-    # 选择当前代的精英分子
+    # 选择当前代中得分最好的分子作为精英分子
     current_elite_mols = sorted_molecules[:elitism_mols]
     current_elite_scores = sorted_scores[:elitism_mols]
     
@@ -558,9 +558,16 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
         
         # 创建新的精英分子字典
         new_elite_mols = {mol: score for mol, score in zip(best_elite_mols, best_elite_scores)}
+        
+        # 记录精英分子的选择过程
+        logger.info(f"精英分子选择过程:")
+        logger.info(f"上一代精英分子: {list(prev_elite_mols.keys())}")
+        logger.info(f"当前代候选精英分子: {current_elite_mols}")
+        logger.info(f"最终选择的精英分子: {list(new_elite_mols.keys())}")
     else:
         # 第一代，直接使用当前代的精英分子
         new_elite_mols = {mol: score for mol, score in zip(current_elite_mols, current_elite_scores)}
+        logger.info(f"第一代精英分子: {list(new_elite_mols.keys())}")
     
     # 从剩余分子中选择适应度种子（排除已选择的精英分子）
     remaining_molecules = [mol for mol in sorted_molecules if mol not in new_elite_mols]
@@ -638,18 +645,33 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
         )
         return seed_output, new_elite_mols
     else:
-        # 1. 读取上一代seed
+        # 1. 读取上一代seed，但排除精英分子
         prev_seed_file = os.path.join(args.output_dir, f"generation_{generation_num-1}", f"generation_{generation_num-1}_seeds.smi")
-        # 2. decompose+gpt生成新分子
-        decompose_output = run_decompose(prev_seed_file, f"gen{generation_num}_seed", logger)
+        non_elite_molecules = []
+        with open(prev_seed_file, 'r') as f:
+            for line in f:
+                mol = line.strip()
+                if mol and (prev_elite_mols is None or mol not in prev_elite_mols):
+                    non_elite_molecules.append(mol)
+        
+        # 2. 只对非精英分子进行decompose+gpt生成
+        temp_seed_file = os.path.join(output_base, "temp_non_elite_seeds.smi")
+        with open(temp_seed_file, 'w') as f:
+            for mol in non_elite_molecules:
+                f.write(f"{mol}\n")
+        
+        decompose_output = run_decompose(temp_seed_file, f"gen{generation_num}_seed", logger)
         gpt_output = run_gpt_generation(decompose_output, f"gen{generation_num}_seed", generation_num, logger)
-        # 3. 交叉
+        
+        # 3. 交叉（只使用非精英分子）
         crossover_output = os.path.join(output_base, f"generation_{generation_num}_crossover.smi")
-        run_crossover(prev_seed_file, gpt_output, crossover_output, generation_num, args.num_crossovers, logger)
-        # 4. 变异
+        run_crossover(temp_seed_file, gpt_output, crossover_output, generation_num, args.num_crossovers, logger)
+        
+        # 4. 变异（只使用非精英分子）
         mutation_output = os.path.join(output_base, f"generation_{generation_num}_mutation.smi")
-        run_mutation(prev_seed_file, gpt_output, mutation_output, args.num_mutations, logger)
-        # 5. 合并新种群
+        run_mutation(temp_seed_file, gpt_output, mutation_output, args.num_mutations, logger)
+        
+        # 5. 合并新种群（精英分子 + 新生成的分子）
         new_population_file = os.path.join(output_base, f"generation_{generation_num}_new_population.smi")
         with open(new_population_file, 'w') as fout:
             # 首先写入精英分子（如果有的话）
@@ -669,6 +691,7 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
         docking_output = os.path.join(output_base, f"generation_{generation_num}_docked.smi")
         run_docking(new_population_file, docking_output, args.receptor_file, args.mgltools_path, logger, args.number_of_processors, args.multithread_mode)
         calculate_and_print_stats(docking_output, generation_num, logger)
+        
         # 7. 选seed
         diversity_mols = max(0, args.diversity_mols_to_seed_first_generation - (generation_num * args.diversity_seed_depreciation_per_gen))
         seed_output = os.path.join(output_base, f"generation_{generation_num}_seeds.smi")
@@ -676,6 +699,11 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
             docking_output, seed_output, args.top_mols_to_seed_next_generation, 
             diversity_mols, logger, args.elitism_mols_to_next_generation, prev_elite_mols
         )
+        
+        # 清理临时文件
+        if os.path.exists(temp_seed_file):
+            os.remove(temp_seed_file)
+            
         return seed_output, new_elite_mols
 
 def main():

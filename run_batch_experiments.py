@@ -11,7 +11,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 def setup_logging(output_dir):
     """设置日志"""
-    log_file = os.path.join(output_dir, "batch_runner.log")
+    log_file = os.path.join(output_dir, "output_batch_runner.log")
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -25,7 +25,7 @@ def setup_logging(output_dir):
 def run_instance(instance_id, output_dir, logger):
     """运行单个实例"""
     # 创建实例特定的日志文件
-    instance_log = os.path.join(output_dir, f"instance_{instance_id}.log")
+    instance_log = os.path.join(output_dir, f"output_instance_{instance_id}.log")
     
     # 构建命令
     cmd = [
@@ -44,7 +44,7 @@ def run_instance(instance_id, output_dir, logger):
                 start_new_session=True  # 确保进程在后台运行
             )
         
-        logger.info(f"实例 {instance_id} 已启动，PID: {process.pid}")
+        logger.info(f"实例 {instance_id} 已启动,PID: {process.pid}")
         return process.pid
         
     except Exception as e:
@@ -54,7 +54,7 @@ def run_instance(instance_id, output_dir, logger):
 def main():
     # 创建输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join(PROJECT_ROOT, "batch_runs", timestamp)
+    output_dir = os.path.join(PROJECT_ROOT, "output_batch_runs", timestamp)
     os.makedirs(output_dir, exist_ok=True)
     
     # 设置日志
@@ -73,7 +73,7 @@ def main():
         time.sleep(2)
     
     # 保存所有实例的PID到文件
-    pid_file = os.path.join(output_dir, "instance_pids.txt")
+    pid_file = os.path.join(output_dir, "output_instance_pids.txt")
     with open(pid_file, 'w') as f:
         for i, pid in enumerate(instance_pids):
             f.write(f"Instance {i}: PID {pid}\n")
