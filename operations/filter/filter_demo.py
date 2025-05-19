@@ -3,6 +3,7 @@ import os
 import argparse
 import numpy as np
 from rdkit import Chem
+from rdkit.Chem.MolStandardize import rdMolStandardize
 from tdc import Oracle
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
@@ -17,7 +18,7 @@ from autogrow.operators.filter.filter_classes.filter_children_classes.mozziconac
 from autogrow.operators.filter.filter_classes.filter_children_classes.pains_filter import PAINSFilter
 from autogrow.operators.filter.filter_classes.filter_children_classes.nih_filter import NIHFilter
 from autogrow.operators.filter.filter_classes.filter_children_classes.brenk_filter import BRENKFilter
-
+import autogrow.operators.convert_files.gypsum_dl.gypsum_dl.MolObjectHandling as MOH
 
 class StructureCheckFilter:
     def run_filter(self, mol):
@@ -154,7 +155,16 @@ def main():
     filter_counters = {name: 0 for name in filters.keys()}
     
     for smi in population:
-        mol = Chem.MolFromSmiles(smi)
+        mol = Chem.MolFromSmiles(smi, sanitize=False)
+#5-19修改
+        mol = MOH.check_sanitization(mol)
+        if mol is None:
+            continue
+        mol = MOH.try_deprotanation(mol)
+        if mol is None:
+            continue
+        uncharger_obj = rdMolStandardize.Uncharger()
+        mol = uncharger_obj.uncharge(mol)
         if mol is None:
             continue
         
