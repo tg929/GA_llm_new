@@ -541,33 +541,32 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
     sorted_molecules = [molecules[i] for i in sorted_indices]
     sorted_scores = [scores[i] for i in sorted_indices]
     
-    # 选择当前代中得分最好的分子作为精英分子
-    current_elite_mols = sorted_molecules[:elitism_mols]
-    current_elite_scores = sorted_scores[:elitism_mols]
+    # 获取当前代得分最好的分子
+    current_best_mol = sorted_molecules[0]
+    current_best_score = sorted_scores[0]
     
     # 如果有上一代的精英分子，比较并选择最好的
     if prev_elite_mols:
-        # 将上一代精英分子与当前代精英分子合并并排序
-        all_elite_mols = list(prev_elite_mols.keys()) + current_elite_mols
-        all_elite_scores = list(prev_elite_mols.values()) + current_elite_scores
+        prev_best_mol = list(prev_elite_mols.keys())[0]
+        prev_best_score = list(prev_elite_mols.values())[0]
         
-        # 按分数排序
-        elite_indices = np.argsort(all_elite_scores)
-        best_elite_mols = [all_elite_mols[i] for i in elite_indices[:elitism_mols]]
-        best_elite_scores = [all_elite_scores[i] for i in elite_indices[:elitism_mols]]
-        
-        # 创建新的精英分子字典
-        new_elite_mols = {mol: score for mol, score in zip(best_elite_mols, best_elite_scores)}
-        
-        # 记录精英分子的选择过程
-        logger.info(f"精英分子选择过程:")
-        logger.info(f"上一代精英分子: {list(prev_elite_mols.keys())}")
-        logger.info(f"当前代候选精英分子: {current_elite_mols}")
-        logger.info(f"最终选择的精英分子: {list(new_elite_mols.keys())}")
+        # 比较当前代最好分子和上一代精英分子
+        if current_best_score < prev_best_score:
+            # 如果当前代有更好的分子，使用当前代的
+            new_elite_mols = {current_best_mol: current_best_score}
+            logger.info(f"发现更好的分子，更新精英分子:")
+            logger.info(f"上一代精英分子: {prev_best_mol} (得分: {prev_best_score})")
+            logger.info(f"新的精英分子: {current_best_mol} (得分: {current_best_score})")
+        else:
+            # 如果上一代的精英分子更好，继续保留
+            new_elite_mols = {prev_best_mol: prev_best_score}
+            logger.info(f"保留上一代精英分子:")
+            logger.info(f"当前代最好分子: {current_best_mol} (得分: {current_best_score})")
+            logger.info(f"保留的精英分子: {prev_best_mol} (得分: {prev_best_score})")
     else:
-        # 第一代，直接使用当前代的精英分子
-        new_elite_mols = {mol: score for mol, score in zip(current_elite_mols, current_elite_scores)}
-        logger.info(f"第一代精英分子: {list(new_elite_mols.keys())}")
+        # 第一代，直接使用当前代最好的分子作为精英分子
+        new_elite_mols = {current_best_mol: current_best_score}
+        logger.info(f"第一代精英分子: {current_best_mol} (得分: {current_best_score})")
     
     # 从剩余分子中选择适应度种子（排除已选择的精英分子）
     remaining_molecules = [mol for mol in sorted_molecules if mol not in new_elite_mols]
@@ -678,7 +677,7 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
             if prev_elite_mols:
                 for mol, score in prev_elite_mols.items():
                     fout.write(f"{mol}\n")
-                logger.info(f"已将 {len(prev_elite_mols)} 个精英分子加入新种群")
+                logger.info(f"已将上一代精英分子 {list(prev_elite_mols.keys())[0]} (得分: {list(prev_elite_mols.values())[0]}) 加入新种群")
             
             # 然后写入交叉和变异产生的新分子
             for fname in [crossover_output, mutation_output]:

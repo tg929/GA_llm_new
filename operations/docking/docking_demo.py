@@ -79,8 +79,8 @@ class DockingExecutor:
             'size_x': 25.0,       # 对接盒尺寸
             'size_y': 16.0,
             'size_z': 25.0,
-            'docking_exhaustiveness': 8,  # 添加这个参数
-            'docking_num_modes': 9,       # 添加这个参数
+            'docking_exhaustiveness': 8,  
+            'docking_num_modes': 9,       
             'environment': {                   
                 'MGLPY': os.path.join(self.mgltools_path, "bin/python"),
                 'PYTHONPATH': f"{os.path.join(self.mgltools_path, 'MGLToolsPckgs')}:{os.environ.get('PYTHONPATH', '')}"
