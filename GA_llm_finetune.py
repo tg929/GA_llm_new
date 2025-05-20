@@ -8,6 +8,8 @@ import subprocess
 import multiprocessing
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from autogrow.docking.scoring.scoring_classes.scoring_functions.lig_efficiency import get_number_heavy_atoms
+from tdc import Oracle, Evaluator
 
 # 设置项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -453,9 +455,8 @@ def run_analysis(input_file, output_prefix, gen_num, logger):
     logger.info(f"对接结果分析完成，结果保存至: {output_dir}/generation_{gen_num}_stats.txt")
     return f"{output_dir}/generation_{gen_num}_sorted.smi"
 
-def calculate_and_print_stats(docking_output, generation_num, logger):
-    """计算并输出当前种群的分数统计信息"""
-    # 读取对接结果文件中的分数
+def calculate_and_print_stats(docking_output, generation_num, logger, ref_smiles=None):
+    """计算并输出当前种群的分数统计信息,并输出Nov, Div, QED, SA"""
     molecules = []
     scores = []
     try:
@@ -469,32 +470,37 @@ def calculate_and_print_stats(docking_output, generation_num, logger):
     except Exception as e:
         logger.error(f"读取对接结果文件失败: {str(e)}")
         return
-    
     if not scores:
         logger.warning("对接结果中没有发现有效分数")
         return
-    
-    # 将分数从小到大排序（对接分数越小越好）
     sorted_scores = sorted(scores)
-    
-    # 计算统计信息
     mean_score = np.mean(sorted_scores)
     top1_score = sorted_scores[0] if len(sorted_scores) >= 1 else None
-    
-    # 计算top10均值
     top10_scores = sorted_scores[:10] if len(sorted_scores) >= 10 else sorted_scores
     top10_mean = np.mean(top10_scores)
-    # 计算top20均值
     top20_scores = sorted_scores[:20] if len(sorted_scores) >= 20 else sorted_scores
     top20_mean = np.mean(top20_scores)
-    # 计算top50均值
     top50_scores = sorted_scores[:50] if len(sorted_scores) >= 50 else sorted_scores
     top50_mean = np.mean(top50_scores)
-    # 计算top100均值
     top100_scores = sorted_scores[:100] if len(sorted_scores) >= 100 else sorted_scores
     top100_mean = np.mean(top100_scores)
-    
-    # 输出统计信息
+
+    # 计算Nov, Div, QED, SA
+    div_eval = Evaluator(name='Diversity')
+    nov_eval = Evaluator(name='Novelty')
+    qed_eval = Oracle(name='qed')
+    sa_eval = Oracle(name='sa')
+    if ref_smiles is None:
+        ref_smiles = []
+    try:
+        diversity = div_eval(molecules) if len(molecules) >= 2 else 0.0
+        novelty = nov_eval(molecules, ref_smiles) if ref_smiles else 0.0
+        avg_qed = np.mean([qed_eval(s) for s in molecules]) if molecules else 0.0
+        avg_sa = np.mean([sa_eval(s) for s in molecules]) if molecules else 0.0
+    except Exception as e:
+        diversity, novelty, avg_qed, avg_sa = 0.0, 0.0, 0.0, 0.0
+        logger.warning(f"分子性质计算异常: {e}")
+
     stats_message = (
         f"\n==================== Generation {generation_num} 统计信息 ====================\n"
         f"总分子数: {len(scores)}\n"
@@ -504,14 +510,13 @@ def calculate_and_print_stats(docking_output, generation_num, logger):
         f"Top20得分均值: {top20_mean:.4f}\n"
         f"Top50得分均值: {top50_mean:.4f}\n"
         f"Top100得分均值: {top100_mean:.4f}\n"
+        f"多样性(Div): {diversity:.4f}\n"
+        f"新颖性(Nov): {novelty:.4f}\n"
+        f"平均QED: {avg_qed:.4f}\n"
+        f"平均SA: {avg_sa:.4f}\n"
         f"========================================================================\n"
     )
-    
-    # 输出到日志
     logger.info(stats_message)
-    
-    # 输出到控制台
-    print(stats_message)
 
 def select_seeds_for_next_generation(docking_output, seed_output, top_mols, diversity_mols, logger, elitism_mols=1, prev_elite_mols=None):
     """基于适应度和多样性选择种子分子，支持精英保留机制"""
@@ -520,14 +525,22 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
     # 读取对接结果
     molecules = []
     scores = []
+    LE_scores = []
     try:
         with open(docking_output, 'r') as f:
             for line in f:
                 if line.strip():
                     parts = line.strip().split()
                     if len(parts) >= 2:
-                        molecules.append(parts[0])
-                        scores.append(float(parts[1]))
+                        mol = parts[0]
+                        score = float(parts[1])
+                        molecules.append(mol)
+                        scores.append(score)
+                        heavy_atoms = get_number_heavy_atoms(mol)
+                        if heavy_atoms and heavy_atoms > 0:
+                            LE_scores.append(score / heavy_atoms)
+                        else:
+                            LE_scores.append(float('inf'))
     except Exception as e:
         logger.error(f"读取对接结果文件失败: {str(e)}")
         return None
@@ -536,89 +549,85 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
         logger.warning("对接结果中没有发现有效分数")
         return None
     
-    # 按分数排序（对接分数越小越好）
-    sorted_indices = np.argsort(scores)
+    # 按LE分数排序（LE越小越好）
+    sorted_indices = np.argsort(LE_scores)
     sorted_molecules = [molecules[i] for i in sorted_indices]
     sorted_scores = [scores[i] for i in sorted_indices]
-    
-    # 获取当前代得分最好的分子
+    sorted_LE = [LE_scores[i] for i in sorted_indices]
+
+    # 进一步筛选QED/SA
+    qed_eval = Oracle(name='qed')
+    sa_eval = Oracle(name='sa')
+    final_candidates = []
+    for mol in sorted_molecules:
+        try:
+            if qed_eval(mol) > 0.4 and sa_eval(mol) < 4.0:
+                final_candidates.append(mol)
+        except:
+            continue
+        if len(final_candidates) >= top_mols:
+            break
+    # 不足则补齐
+    if len(final_candidates) < top_mols:
+        for mol in sorted_molecules:
+            if mol not in final_candidates:
+                final_candidates.append(mol)
+            if len(final_candidates) >= top_mols:
+                break
+    fitness_seeds = final_candidates[:top_mols]
+
+    # 获取当前代得分最好的分子（精英保留逻辑不变）
+    sorted_scores_by_LE = [scores[i] for i in sorted_indices]
     current_best_mol = sorted_molecules[0]
-    current_best_score = sorted_scores[0]
-    
-    # 如果有上一代的精英分子，比较并选择最好的
+    current_best_score = sorted_scores_by_LE[0]
     if prev_elite_mols:
         prev_best_mol = list(prev_elite_mols.keys())[0]
         prev_best_score = list(prev_elite_mols.values())[0]
-        
-        # 比较当前代最好分子和上一代精英分子
         if current_best_score < prev_best_score:
-            # 如果当前代有更好的分子，使用当前代的
             new_elite_mols = {current_best_mol: current_best_score}
             logger.info(f"发现更好的分子，更新精英分子:")
             logger.info(f"上一代精英分子: {prev_best_mol} (得分: {prev_best_score})")
             logger.info(f"新的精英分子: {current_best_mol} (得分: {current_best_score})")
         else:
-            # 如果上一代的精英分子更好，继续保留
             new_elite_mols = {prev_best_mol: prev_best_score}
             logger.info(f"保留上一代精英分子:")
             logger.info(f"当前代最好分子: {current_best_mol} (得分: {current_best_score})")
             logger.info(f"保留的精英分子: {prev_best_mol} (得分: {prev_best_score})")
     else:
-        # 第一代，直接使用当前代最好的分子作为精英分子
         new_elite_mols = {current_best_mol: current_best_score}
         logger.info(f"第一代精英分子: {current_best_mol} (得分: {current_best_score})")
-    
-    # 从剩余分子中选择适应度种子（排除已选择的精英分子）
-    remaining_molecules = [mol for mol in sorted_molecules if mol not in new_elite_mols]
-    fitness_seeds = remaining_molecules[:top_mols]
-    logger.info(f"已选择 {len(fitness_seeds)} 个适应度种子")
-    
-    # 选择多样性种子
+
+    # 选择多样性种子（原逻辑不变）
+    remaining_molecules = [mol for mol in sorted_molecules if mol not in new_elite_mols and mol not in fitness_seeds]
     diversity_seeds = []
-    remaining_molecules = remaining_molecules[top_mols:]
-    
     if diversity_mols > 0 and remaining_molecules:
-        # 使用简单的最大最小距离算法选择多样性分子
         selected_indices = []
-        # 从剩余分子中随机选择第一个
         first_idx = np.random.randint(0, len(remaining_molecules))
         selected_indices.append(first_idx)
         diversity_seeds.append(remaining_molecules[first_idx])
-        
-        # 选择剩余的多样性分子
         for _ in range(min(diversity_mols - 1, len(remaining_molecules) - 1)):
             max_min_dist = -1
             best_idx = -1
-            
             for i in range(len(remaining_molecules)):
                 if i in selected_indices:
                     continue
-                    
-                # 计算与已选分子的最小距离
                 min_dist = float('inf')
                 for j in selected_indices:
-                    # 使用简单的字符串相似度作为距离度量
                     dist = sum(a != b for a, b in zip(remaining_molecules[i], remaining_molecules[j]))
                     min_dist = min(min_dist, dist)
-                
                 if min_dist > max_min_dist:
                     max_min_dist = min_dist
                     best_idx = i
-            
             if best_idx != -1:
                 selected_indices.append(best_idx)
                 diversity_seeds.append(remaining_molecules[best_idx])
-    
     logger.info(f"已选择 {len(diversity_seeds)} 个多样性种子")
-    
+
     # 合并所有种子（精英分子 + 适应度种子 + 多样性种子）
     all_seeds = list(new_elite_mols.keys()) + fitness_seeds + diversity_seeds
-    
-    # 保存种子分子
     with open(seed_output, 'w') as f:
         for mol in all_seeds:
             f.write(f"{mol}\n")
-    
     logger.info(f"种子选择完成，共选择 {len(all_seeds)} 个分子，保存至: {seed_output}")
     return seed_output, new_elite_mols
 
@@ -628,13 +637,23 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
     output_base = os.path.join(args.output_dir, f"generation_{generation_num}")
     os.makedirs(output_base, exist_ok=True)
 
+    # 读取初始种群作为参考集
+    ref_smiles = []
+    try:
+        with open(args.initial_population, 'r') as f:
+            for line in f:
+                if line.strip():
+                    ref_smiles.append(line.strip().split()[0])
+    except Exception as e:
+        logger.warning(f"读取初始种群作为参考集失败: {str(e)}")
+
     # 0. 确定当前代的种群文件
     if generation_num == 0:
         current_population = args.initial_population
         # 初代直接docking+scoring
         docking_output = os.path.join(output_base, f"generation_{generation_num}_docked.smi")
         run_docking(current_population, docking_output, args.receptor_file, args.mgltools_path, logger, args.number_of_processors, args.multithread_mode)
-        calculate_and_print_stats(docking_output, generation_num, logger)
+        calculate_and_print_stats(docking_output, generation_num, logger, ref_smiles)
         # 选seed
         diversity_mols = max(0, args.diversity_mols_to_seed_first_generation - (generation_num * args.diversity_seed_depreciation_per_gen))
         seed_output = os.path.join(output_base, f"generation_{generation_num}_seeds.smi")
@@ -689,7 +708,7 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
         # 6. docking+scoring
         docking_output = os.path.join(output_base, f"generation_{generation_num}_docked.smi")
         run_docking(new_population_file, docking_output, args.receptor_file, args.mgltools_path, logger, args.number_of_processors, args.multithread_mode)
-        calculate_and_print_stats(docking_output, generation_num, logger)
+        calculate_and_print_stats(docking_output, generation_num, logger, ref_smiles)
         
         # 7. 选seed
         diversity_mols = max(0, args.diversity_mols_to_seed_first_generation - (generation_num * args.diversity_seed_depreciation_per_gen))
