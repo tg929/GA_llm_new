@@ -20,7 +20,7 @@ def get_sa(mol):
 def get_morgan_fingerprint(mol, radius=2, nbits=2048):
     """
     获取分子的 Morgan 指纹。
-    如果解析失败（mol=None），返回 None。
+    如果解析失败(mol=None),返回 None。
     """
     if mol is None:
         return None
