@@ -81,7 +81,8 @@ def vina_dock_single(ligand_file, receptor_pdbqt, results_dir, vars):
         "--size_y", str(vars["size_y"]),
         "--size_z", str(vars["size_z"]),
         "--out", out_file,
-        "--log", log_file
+        "--log", log_file,
+        "--cpu", "1"
     ]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -97,10 +98,11 @@ def vina_dock_single(ligand_file, receptor_pdbqt, results_dir, vars):
 
 # 对接执行器类
 class DockingExecutor:
-    def __init__(self, receptor_pdb, output_dir, mgltools_path):
+    def __init__(self, receptor_pdb, output_dir, mgltools_path, number_of_processors):
         self.receptor_pdb = receptor_pdb
         self.output_dir = os.path.abspath(output_dir)
         self.mgltools_path = mgltools_path
+        self.number_of_processors = number_of_processors
         self._validate_paths()
         
         # 创建必要的目录
@@ -151,7 +153,7 @@ class DockingExecutor:
             'prepare_receptor4.py': os.path.join(self.mgltools_path, "MGLToolsPckgs/AutoDockTools/Utilities24/prepare_receptor4.py"),
             'prepare_ligand4.py': os.path.join(self.mgltools_path, "MGLToolsPckgs/AutoDockTools/Utilities24/prepare_ligand4.py"), 
             'docking_executable': os.path.join(PROJECT_ROOT, "autogrow/docking/docking_executables/vina/autodock_vina_1_1_2_linux_x86/bin/vina"),
-            'number_of_processors': 1,
+            'number_of_processors': self.number_of_processors,
             'debug_mode': False,
             'timeout_vs_gtimeout': 'timeout',  
             'docking_timeout_limit': 120,
@@ -295,55 +297,109 @@ class DockingExecutor:
     def prepare_ligands_batch(self, smi_file):
         """使用autogrow的方法批量准备配体分子"""
         logging.info("批量准备配体分子...")
+        total_start_time = time.time()
 
         # 1. SMILES转3D SDF
+        logging.info("Stage 1: SMILES to 3D SDF conversion starting...")
+        stage1_start_time = time.time()
         if not os.path.exists(self.sdf_dir):
             os.makedirs(self.sdf_dir)
-        convert_to_3d(self.vars, smi_file, self.ligand_dir)
+        convert_to_3d(self.vars, smi_file, self.sdf_dir) # Ensure SDFs go to self.sdf_dir
+        logging.info(f"Stage 1: SMILES to 3D SDF conversion finished. Duration: {time.time() - stage1_start_time:.2f} seconds.")
 
         # 2. SDF转PDB
-        convert_sdf_to_pdbs(self.vars, self.sdf_dir, self.sdf_dir)
-        pdb_dir = self.sdf_dir + "_PDB"
-        if not os.path.exists(pdb_dir):
-            raise RuntimeError(f"PDB目录未生成: {pdb_dir}")
+        logging.info("Stage 2: SDF to PDB conversion starting...")
+        stage2_start_time = time.time()
+        convert_sdf_to_pdbs(self.vars, self.sdf_dir, self.sdf_dir) 
+        actual_pdb_output_dir = os.path.join(self.vars["output_directory"], "PDBs")
+        if not os.path.exists(actual_pdb_output_dir):
+             logging.warning(f"PDB output directory {actual_pdb_output_dir} not found after SDF to PDB conversion. This might lead to errors.")
+        logging.info(f"Stage 2: SDF to PDB conversion finished. Duration: {time.time() - stage2_start_time:.2f} seconds.")
 
-        # 只保留每个SMILES的第一个PDB
-        keep_one_pdb_per_smiles(pdb_dir)
+        # 只保留每个SMILES的第一个PDB, using the correct PDB directory
+        logging.info("Filtering PDB files (keep one per SMILES)...")
+        filter_pdb_start_time = time.time()
+        keep_one_pdb_per_smiles(actual_pdb_output_dir)
+        logging.info(f"Filtering PDB files finished. Duration: {time.time() - filter_pdb_start_time:.2f} seconds.")
 
-        # 3. PDB转PDBQT（加进度条）
-        pdb_files = glob.glob(os.path.join(pdb_dir, "*.pdb"))
+        # 3. PDB转PDBQT（并行处理）
+        logging.info("Stage 3: PDB to PDBQT conversion starting...")
+        stage3_start_time = time.time()
+        pdb_files_to_convert = glob.glob(os.path.join(actual_pdb_output_dir, "*.pdb"))
         pdbqt_files = []
-        for pdb_file in tqdm(pdb_files, desc="PDB转PDBQT进度"):
-            try:
-                pdbqt_file = pdb_file + "qt"
-                if not os.path.exists(pdbqt_file):
-                    cmd = [
-                        self.vars["mgl_python"],
-                        self.vars["prepare_ligand4.py"],
-                        "-l", pdb_file,
-                        "-o", pdbqt_file
-                    ]
-                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if os.path.exists(pdbqt_file):
-                    pdbqt_files.append(pdbqt_file)
-                time.sleep(0.5)
-            except Exception as e:
-                logging.error(f"PDBQT转换失败: {pdb_file}, 错误: {str(e)}")
-                continue
+
+        if not pdb_files_to_convert:
+            logging.warning(f"No PDB files found in {actual_pdb_output_dir} for PDBQT conversion.")
+        else:
+            logging.info(f"Starting PDB to PDBQT conversion for {len(pdb_files_to_convert)} files using {self.number_of_processors} workers.")
+            with ProcessPoolExecutor(max_workers=self.number_of_processors) as pool:
+                future_to_pdb = {
+                    pool.submit(
+                        self._convert_single_pdb_to_pdbqt_worker, 
+                        pdb_file, 
+                        self.vars["mgl_python"], 
+                        self.vars["prepare_ligand4.py"]
+                    ): pdb_file for pdb_file in pdb_files_to_convert
+                }
+                for future in tqdm(as_completed(future_to_pdb), total=len(pdb_files_to_convert), desc="PDB to PDBQT"):
+                    pdb_file_path = future_to_pdb[future]
+                    try:
+                        result_pdbqt_file = future.result()
+                        if result_pdbqt_file:
+                            pdbqt_files.append(result_pdbqt_file)
+                    except Exception as exc:
+                        logging.error(f'{pdb_file_path} generated an exception during PDBQT conversion: {exc}')
         
         if not pdbqt_files:
             raise RuntimeError("没有成功生成任何PDBQT文件,无法进行后续对接。请检查MGLTools配置和PDB文件内容。")
         
+        logging.info(f"Stage 3: PDB to PDBQT conversion finished. Duration: {time.time() - stage3_start_time:.2f} seconds. {len(pdbqt_files)} PDBQT files generated.")
+        logging.info(f"Total ligand preparation time: {time.time() - total_start_time:.2f} seconds.")
         return pdbqt_files
+
+    def _convert_single_pdb_to_pdbqt_worker(self, pdb_file_path, mgl_python_path, prep_ligand_script_path):
+        """Worker function to convert a single PDB to PDBQT."""
+        pdbqt_file = pdb_file_path + "qt"
+        # Check if already converted or source PDB exists
+        if not os.path.exists(pdb_file_path):
+            logging.warning(f"Source PDB file does not exist: {pdb_file_path}")
+            return None
+            
+        if os.path.exists(pdbqt_file): # If already exists, skip conversion but return path
+            return pdbqt_file
+
+        cmd = [
+            mgl_python_path,
+            prep_ligand_script_path,
+            "-l", pdb_file_path,
+            "-o", pdbqt_file
+        ]
+        try:
+            # It's important to capture output here if there are common, non-fatal errors from MGLTools
+            # For now, DEVNULL as per original script for successful runs.
+            process = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if os.path.exists(pdbqt_file):
+                return pdbqt_file
+            else:
+                # This case (check=True but file not existing) should be rare but log it.
+                logging.error(f"PDBQT conversion ran for {pdb_file_path} but output {pdbqt_file} not found. STDOUT: {process.stdout} STDERR: {process.stderr}")
+                return None
+        except subprocess.CalledProcessError as e:
+            logging.error(f"PDBQT conversion failed for: {pdb_file_path}. Error: {e.stderr}")
+            return None
+        except Exception as e: # Catch other potential errors
+            logging.error(f"An unexpected error occurred during PDBQT conversion for {pdb_file_path}: {str(e)}")
+            return None
 
     def run_docking_batch(self, receptor_pdbqt, pdbqt_files):
         """批量执行对接"""
         logging.info(f"开始批量对接 {len(pdbqt_files)} 个分子...")
+        docking_start_time = time.time()
 
         if not os.path.exists(self.results_dir):
             os.makedirs(self.results_dir)
 
-        max_workers = min(8, os.cpu_count() or 1)
+        max_workers = self.number_of_processors # Use configured number of processors
         futures = []
         scores = {}
         
@@ -359,6 +415,7 @@ class DockingExecutor:
                     mol_name = os.path.basename(ligand_file).replace(".pdbqt", "")
                     scores[mol_name] = score
         
+        logging.info(f"批量对接完成. Duration: {time.time() - docking_start_time:.2f} seconds. Successfully docked {len(scores)} molecules.")
         return scores
 
     def process_ligand(self, smile):
@@ -483,9 +540,33 @@ def main():
     parser.add_argument('-m', '--mgltools', default="mgltools_x86_64Linux2_1.5.6", help='MGLTools installation path')
     parser.add_argument('--max_failures', type=int, default=5, help='最大连续失败次数，超过此数将暂停并提示')
     parser.add_argument('--use_batch', action='store_true', help='使用批量处理模式')
+    parser.add_argument('--number_of_processors', '-p', type=int, default=-1, 
+                        help='Number of processors to use for parallel tasks. -1 for all available CPU cores.')
     
     args = parser.parse_args()
     
+    # Determine the actual number of processors to use
+    actual_num_processors = args.number_of_processors
+    try:
+        cpu_cores = os.cpu_count()
+        if not cpu_cores or cpu_cores < 1: # Fallback if cpu_count is None or invalid
+            cpu_cores = 1 
+    except NotImplementedError:
+        cpu_cores = 1 # Fallback if os.cpu_count() is not implemented
+        
+    if args.number_of_processors == -1:
+        actual_num_processors = cpu_cores
+        logging.info(f"Using all available processors: {actual_num_processors}")
+    elif args.number_of_processors > cpu_cores:
+        logging.warning(f"Requested {args.number_of_processors} processors, but only {cpu_cores} are available. Using {cpu_cores}.")
+        actual_num_processors = cpu_cores
+    elif args.number_of_processors < 1:
+        logging.warning(f"Requested {args.number_of_processors} processors, which is invalid. Using 1 processor.")
+        actual_num_processors = 1
+    else:
+        actual_num_processors = args.number_of_processors
+        logging.info(f"Using {actual_num_processors} processors as specified.")
+
     # 准备输出目录
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     setup_logging(os.path.dirname(args.output))
@@ -494,7 +575,8 @@ def main():
     executor = DockingExecutor(
         receptor_pdb=args.receptor,
         output_dir=os.path.dirname(args.output),
-        mgltools_path=args.mgltools
+        mgltools_path=args.mgltools,
+        number_of_processors=actual_num_processors
     )
     
     # 读取输入文件

@@ -1,25 +1,72 @@
 import argparse
 import os
 import numpy as np
+import sys
 from rdkit import Chem
 from rdkit.Chem import AllChem, DataStructs
 from rdkit.Chem import QED
 from rdkit.Chem.rdMolDescriptors import GetMorganFingerprintAsBitVect
-# For SA score, RDKit's Contrib module is often used.
-# Ensure sascorer.py is accessible or RDKit is built with it.
+
+# 添加项目根目录到路径，方便导入其他模块
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+
+# 完全重写SA Score导入部分
+# RDKit中的SA Score计算通常位于rdkit.Contrib.SA_score.sascorer模块
+SA_SCORE_CALCULATOR = None
 try:
-    from rdkit.Chem import SA_Score
-    # If the above fails, it might be that SA_Score is not directly under Chem
-    # but rather in Contrib. Let's try to import sascorer directly if needed.
-    # This assumes sascorer.py is in PYTHONPATH or rdkit.Contrib.SA_Score can be imported.
+    # 尝试1：常规路径
+    from rdkit.Contrib.SA_score import sascorer
+    SA_SCORE_CALCULATOR = sascorer.calculateScore
+    print("Successfully imported SA Score calculator from rdkit.Contrib.SA_score.sascorer")
 except ImportError:
-    # A common way to include sascorer if not directly available
     try:
-        from rdkit.Contrib import SA_Score as SA_Score_contrib
-        SA_Score = SA_Score_contrib 
+        # 尝试2：直接从sascorer模块导入
+        import sascorer
+        SA_SCORE_CALCULATOR = sascorer.calculateScore
+        print("Successfully imported SA Score calculator from sascorer module")
     except ImportError:
-        print("Warning: SA_Score module not found. SA scores will not be calculated.")
-        SA_Score = None
+        try:
+            # 尝试3：从rdkit.Chem导入(某些版本可能放在这里)
+            from rdkit.Chem import sascorer
+            SA_SCORE_CALCULATOR = sascorer.calculateScore
+            print("Successfully imported SA Score calculator from rdkit.Chem.sascorer")
+        except ImportError:
+            print("Warning: SA_Score module not found. SA scores will not be calculated.")
+            SA_SCORE_CALCULATOR = None
+
+# 导入已有的SA Score计算模块
+try:
+    # 首先尝试导入项目中现有的SA Score计算模块
+    from fragment_GPT.utils.chem_utils import get_sa, get_qed
+    print("成功从fragment_GPT.utils.chem_utils导入SA和QED计算函数")
+    # 为了保持1-10的SA分数范围，我们需要逆转get_sa函数的计算
+    def calculate_sa_original(mol):
+        # get_sa返回(10 - sascorer.calculateScore(mol)) / 9，是0-1范围
+        # 我们需要的是原始的sascorer.calculateScore(mol)，是1-10范围
+        sa_normalized = get_sa(mol)  # 0-1范围的值
+        sa_original = 10 - (sa_normalized * 9)  # 转回1-10范围
+        return sa_original
+except ImportError:
+    print("尝试导入fragment_GPT.utils.chem_utils失败，使用备用方法")
+    # 备用方法：直接导入sascorer
+    try:
+        # 尝试1：项目根目录下的utils
+        sys.path.append(os.path.join(PROJECT_ROOT, 'fragment_GPT/utils'))
+        import sascorer
+        def calculate_sa_original(mol):
+            return sascorer.calculateScore(mol)
+        print("成功从项目的sascorer模块导入SA计算函数")
+    except ImportError:
+        try:
+            # 尝试2：RDKit的SA Score
+            from rdkit.Contrib.SA_score import sascorer
+            def calculate_sa_original(mol):
+                return sascorer.calculateScore(mol)
+            print("成功从rdkit.Contrib.SA_score导入SA计算函数")
+        except ImportError:
+            print("警告：无法导入任何SA Score计算模块，SA分数将不可用")
+            calculate_sa_original = None
 
 def load_smiles_from_file(filepath):
     """Loads SMILES from a file, one SMILES per line."""
@@ -134,36 +181,43 @@ def calculate_diversity(mols):
     return diversity
 
 def calculate_qed_scores(mols):
-    """Calculates QED for a list of RDKit Mol objects."""
+    """Calculates QED (0-1范围) for a list of RDKit Mol objects."""
     qed_scores = []
     if not mols:
         return qed_scores
     for mol in mols:
         try:
+            # 直接使用RDKit的QED计算函数，结果范围是0-1
             qed_scores.append(QED.qed(mol))
         except Exception as e:
-            # print(f"Warning: Could not calculate QED for a molecule. Error: {e}")
-            pass # Can add more specific error handling or logging
+            print(f"Warning: Could not calculate QED for a molecule. Error: {str(e)}")
+    
+    print(f"Successfully calculated QED scores for {len(qed_scores)} out of {len(mols)} molecules.")
     return qed_scores
 
 def calculate_sa_scores(mols):
-    """Calculates SA scores for a list of RDKit Mol objects."""
+    """Calculates SA scores (1-10范围，值越低越好) for a list of RDKit Mol objects."""
     sa_scores = []
-    if not SA_Score or not mols:
-        if not SA_Score:
-            print("SA_Score module not available, skipping SA score calculation.")
+    if not calculate_sa_original or not mols:
+        if not calculate_sa_original:
+            print("SA Score calculator function not available, skipping SA score calculation.")
         return sa_scores
         
     for mol in mols:
         try:
-            # The SA_Score module usually has a function like 'calculateScore' or similar
-            # This depends on the exact version/implementation of sascorer being used
-            # A common pattern is:
-            sa_scores.append(SA_Score.calculateScore(mol))
+            # 使用我们定义的calculate_sa_original函数，确保结果在1-10范围内
+            sa_score = calculate_sa_original(mol)
+            sa_scores.append(sa_score)
         except Exception as e:
-            # print(f"Warning: Could not calculate SA score for a molecule. Error: {e}")
-            pass
+            print(f"Warning: Could not calculate SA score for a molecule. Error: {str(e)}")
+    
+    print(f"Successfully calculated SA scores for {len(sa_scores)} out of {len(mols)} molecules.")
     return sa_scores
+
+def print_calculation_results(results):
+    """打印计算结果，避免格式问题"""
+    print("Calculation Results:")
+    print(results)
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a generation of molecules.")
@@ -210,44 +264,52 @@ def main():
     mean_sa = np.mean(sa_scores) if sa_scores else np.nan
 
     # Prepare results
-    results = (
-        f"Metrics for Population: {os.path.basename(args.current_population_docked_file)}
-"
-        f"--------------------------------------------------
-"
-        f"Total molecules processed: {len(current_smiles_list)}
-"
-        f"Valid RDKit molecules for properties: {len(all_mols)}
-"
-        f"Molecules with docking scores: {len(docking_scores)}
-"
-        f"--------------------------------------------------
-"
-        f"Docking Score - Top 1: {top1_score:.4f if not np.isnan(top1_score) else 'N/A'}
-"
-        f"Docking Score - Top 10 Mean: {top10_mean_score:.4f if not np.isnan(top10_mean_score) else 'N/A'}
-"
-        f"Docking Score - Top 100 Mean: {top100_mean_score:.4f if not np.isnan(top100_mean_score) else 'N/A'}
-"
-        f"--------------------------------------------------
-"
-        f"Novelty (vs {os.path.basename(args.initial_population_file)}): {novelty:.4f}
-"
-        f"Diversity (Internal): {diversity:.4f}
-"
-        f"--------------------------------------------------
-"
-        f"QED - Mean: {mean_qed:.4f if not np.isnan(mean_qed) else 'N/A'}
-"
-        f"SA Score - Mean: {mean_sa:.4f if not np.isnan(mean_sa) else 'N/A'}
-"
-        f"--------------------------------------------------
-"
-    )
+    # 安全地处理可能包含特殊字符的文件名
+    population_filename = os.path.basename(args.current_population_docked_file)
+    initial_population_filename = os.path.basename(args.initial_population_file)
     
-    print("
-Calculation Results:")
-    print(results)
+    # 为了避免f-string格式化问题，使用传统的字符串格式化
+    results = "Metrics for Population: {}\n".format(population_filename)
+    results += "--------------------------------------------------\n"
+    results += "Total molecules processed: {}\n".format(len(current_smiles_list))
+    results += "Valid RDKit molecules for properties: {}\n".format(len(all_mols))
+    results += "Molecules with docking scores: {}\n".format(len(docking_scores))
+    results += "--------------------------------------------------\n"
+    
+    # 处理浮点数格式化，注意处理NaN情况
+    if np.isnan(top1_score):
+        results += "Docking Score - Top 1: N/A\n"
+    else:
+        results += "Docking Score - Top 1: {:.4f}\n".format(top1_score)
+        
+    if np.isnan(top10_mean_score):
+        results += "Docking Score - Top 10 Mean: N/A\n"
+    else:
+        results += "Docking Score - Top 10 Mean: {:.4f}\n".format(top10_mean_score)
+        
+    if np.isnan(top100_mean_score):
+        results += "Docking Score - Top 100 Mean: N/A\n"
+    else:
+        results += "Docking Score - Top 100 Mean: {:.4f}\n".format(top100_mean_score)
+    
+    results += "--------------------------------------------------\n"
+    results += "Novelty (vs {}): {:.4f}\n".format(initial_population_filename, novelty)
+    results += "Diversity (Internal): {:.4f}\n".format(diversity)
+    results += "--------------------------------------------------\n"
+    
+    if np.isnan(mean_qed):
+        results += "QED - Mean: N/A\n"
+    else:
+        results += "QED - Mean: {:.4f}\n".format(mean_qed)
+        
+    if np.isnan(mean_sa):
+        results += "SA Score - Mean: N/A\n"
+    else:
+        results += "SA Score - Mean: {:.4f}\n".format(mean_sa)
+    
+    results += "--------------------------------------------------\n"
+    
+    print_calculation_results(results)
     
     # Save results to output file
     try:

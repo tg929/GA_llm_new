@@ -8,6 +8,7 @@ import subprocess
 import multiprocessing
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import glob
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 def setup_logging(output_dir, generation_num):
@@ -63,9 +64,6 @@ def run_gpt_generation(input_file, output_prefix, gen_num, logger):
     output_dir = os.path.join(PROJECT_ROOT, "fragment_GPT/output")
     os.makedirs(output_dir, exist_ok=True)
     
-    # 设置输出文件路径
-    output_file = os.path.join(output_dir, f"crossovered{gen_num}_frags_new_{gen_num}.smi")
-    
     # 构建命令并执行
     generate_script = os.path.join(PROJECT_ROOT, "fragment_GPT/generate_all.py")
     cmd = [
@@ -81,22 +79,41 @@ def run_gpt_generation(input_file, output_prefix, gen_num, logger):
         logger.error(f"GPT生成失败: {process.stderr}")
         raise Exception("GPT生成失败")
     
-    if not os.path.exists(output_file):
-        logger.warning(f"警告: 预期的输出文件 {output_file} 不存在，尝试查找替代文件...")
-        alternative_file = os.path.join(output_dir, f"crossovered{output_prefix}_frags_new_{gen_num}.smi")
-        if os.path.exists(alternative_file):
-            logger.info(f"找到替代文件: {alternative_file}")
-            output_file = alternative_file
-        else:
-            dir_files = [f for f in os.listdir(output_dir) if f.endswith(f"_new_{gen_num}.smi")]
-            if dir_files:
-                newest_file = max(dir_files, key=lambda f: os.path.getmtime(os.path.join(output_dir, f)))
-                output_file = os.path.join(output_dir, newest_file)
-                logger.info(f"找到最新生成的文件: {output_file}")
-            else:
-                raise Exception(f"找不到GPT生成的输出文件,生成可能失败")
+    # 修改文件查找策略
+    # 首先查找所有匹配的文件模式
+    possible_files = [
+        os.path.join(output_dir, f"crossovered{gen_num}_frags_new_{gen_num}.smi"),  # 期望的命名模式
+        os.path.join(output_dir, f"crossovered{output_prefix}_frags_new_{gen_num}.smi"),  # 使用output_prefix
+    ]
     
-    logger.info(f"GPT生成完成,输出文件: {output_file}")
+    # 添加所有后缀为_new_{gen_num}.smi的文件
+    suffix_pattern_files = [os.path.join(output_dir, f) for f in os.listdir(output_dir) 
+                           if f.endswith(f"_new_{gen_num}.smi")]
+    
+    # 合并所有可能的文件并去重
+    all_candidate_files = list(set(possible_files + suffix_pattern_files))
+    
+    # 检查这些文件是否存在
+    existing_files = [f for f in all_candidate_files if os.path.exists(f)]
+    
+    if existing_files:
+        # 如果有多个文件，选择最新的一个
+        output_file = max(existing_files, key=lambda f: os.path.getmtime(f))
+        logger.info(f"找到GPT生成的输出文件: {output_file}")
+    else:
+        # 没有找到任何匹配的文件，查找备用模式
+        backup_files = []
+        for pattern in [f"*_new_{gen_num}.smi", f"*_frags_new_*.smi"]:
+            matching_files = glob.glob(os.path.join(output_dir, pattern))
+            backup_files.extend(matching_files)
+        
+        if backup_files:
+            output_file = max(backup_files, key=lambda f: os.path.getmtime(f))
+            logger.info(f"通过备用模式找到GPT生成的输出文件: {output_file}")
+        else:
+            raise Exception(f"找不到任何GPT生成的输出文件，生成可能失败")
+    
+    logger.info(f"GPT生成完成，输出文件: {output_file}")
     return output_file
 
 def run_crossover(source_file, llm_file, output_file, gen_num, num_crossovers, logger):
