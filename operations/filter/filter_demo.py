@@ -156,17 +156,20 @@ def main():
     
     for smi in population:
         mol = Chem.MolFromSmiles(smi, sanitize=False)
+        if mol is None:
+             continue
+
 #5-19修改
-        mol = MOH.check_sanitization(mol)
-        if mol is None:
-            continue
-        mol = MOH.try_deprotanation(mol)
-        if mol is None:
-            continue
-        uncharger_obj = rdMolStandardize.Uncharger()
-        mol = uncharger_obj.uncharge(mol)
-        if mol is None:
-            continue
+        # mol = MOH.check_sanitization(mol)
+        # if mol is None:
+        #     continue
+        # mol = MOH.try_deprotanation(mol)
+        # if mol is None:
+        #     continue
+        # uncharger_obj = rdMolStandardize.Uncharger()
+        # mol = uncharger_obj.uncharge(mol)
+        # if mol is None:
+        #     continue
         
         # 逐一应用过滤器并统计通过情况
         passed_all = True

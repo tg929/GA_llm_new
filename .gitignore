@@ -7,16 +7,10 @@ mgltools_x86_64Linux2_1.5.6
 /output
 /fragment_GPT/output
 /autogrow/output
-/output_1
 /datasets/decompose/decompose_results
 /autogrow
 /fragment_GPT
-/output_2
-/output_3
-/output_reducegpt
-/output_test
-/output_reducegpt_1
-/output_analyse
+/output_*
 *.smi
 *.pdb
 *.pdbqt
@@ -36,3 +30,4 @@ datasets/decompose/decompose_results/*.smi
 .vscode
 *.sh
 batch_*
+autogrow4.0/*

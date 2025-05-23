@@ -1,13 +1,20 @@
 import os
 import sys
+import glob
+import subprocess
+import time
+import re
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 import logging
 import argparse
-import autogrow
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from rdkit import Chem
 from rdkit.Chem import AllChem
+# 导入必要的模块
+from autogrow.operators.convert_files.conversion_to_3d import convert_to_3d
+from autogrow.operators.convert_files.conversion_to_3d import convert_sdf_to_pdbs
 from autogrow.docking.docking_class.docking_class_children.vina_docking import VinaDocking
 from autogrow.docking.docking_class.docking_file_conversion.convert_with_mgltools import MGLToolsConversion
 
@@ -22,6 +29,72 @@ def setup_logging(output_dir):
         ]
     )
 
+def extract_vina_score(log_file):
+    """从Vina日志文件中提取对接得分"""
+    try:
+        with open(log_file, "r") as f:
+            for line in f:
+                if line.strip().startswith("1"):
+                    parts = line.split()
+                    if len(parts) > 1:
+                        return float(parts[1])  # affinity
+    except Exception as e:
+        logging.error(f"解析Vina日志失败: {str(e)}")
+    return None
+
+def keep_one_pdb_per_smiles(pdb_dir):
+    """
+    只保留每个SMILES编号的第一个PDB文件,其余全部删除
+    """
+    pdb_files = glob.glob(os.path.join(pdb_dir, "*.pdb"))
+    seen = set()
+    pattern = re.compile(r"(naphthalene_\d+)")
+    for pdb_file in pdb_files:
+        base = os.path.basename(pdb_file)
+        # 提取SMILES编号（如naphthalene_1）
+        m = pattern.search(base)
+        if m:
+            key = m.group(1)
+            if key in seen:
+                os.remove(pdb_file)
+            else:
+                seen.add(key)
+
+def vina_dock_single(ligand_file, receptor_pdbqt, results_dir, vars):
+    """单个分子的对接函数，用于并行处理"""
+    out_file = os.path.join(
+        results_dir,
+        os.path.basename(ligand_file).replace(".pdbqt", "_out.pdbqt")
+    )
+    log_file = os.path.join(
+        results_dir,
+        os.path.basename(ligand_file).replace(".pdbqt", ".log")
+    )
+    cmd = [
+        vars["docking_executable"],
+        "--receptor", receptor_pdbqt,
+        "--ligand", ligand_file,
+        "--center_x", str(vars["center_x"]),
+        "--center_y", str(vars["center_y"]),
+        "--center_z", str(vars["center_z"]),
+        "--size_x", str(vars["size_x"]),
+        "--size_y", str(vars["size_y"]),
+        "--size_z", str(vars["size_z"]),
+        "--out", out_file,
+        "--log", log_file
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 读取分数
+        score = extract_vina_score(log_file)
+        # 删除log文件
+        if os.path.exists(log_file):
+            os.remove(log_file)
+        return ligand_file, True, score
+    except Exception as e:
+        logging.error(f"对接失败: {ligand_file}, 错误: {str(e)}")
+        return ligand_file, False, None
+
 # 对接执行器类
 class DockingExecutor:
     def __init__(self, receptor_pdb, output_dir, mgltools_path):
@@ -29,6 +102,15 @@ class DockingExecutor:
         self.output_dir = os.path.abspath(output_dir)
         self.mgltools_path = mgltools_path
         self._validate_paths()
+        
+        # 创建必要的目录
+        self.ligand_dir = os.path.join(self.output_dir, "ligands")
+        self.sdf_dir = os.path.join(self.output_dir, "ligands3D_SDFs")
+        self.pdb_dir = os.path.join(self.output_dir, "ligands3D_PDBs")
+        self.results_dir = os.path.join(self.output_dir, "docking_results")
+        
+        for dir_path in [self.ligand_dir, self.sdf_dir, self.pdb_dir, self.results_dir]:
+            os.makedirs(dir_path, exist_ok=True)
         
         # 初始化对接参数
         self.docking_params = {
@@ -62,7 +144,7 @@ class DockingExecutor:
         )
 
     def _prepare_vars(self):
-        """准备Autogrow所需的参数字典"""
+        """准备和Autogrow一样的所需的参数字典"""
         return {
             'filename_of_receptor': self.receptor_pdb,
             'mgl_python': os.path.join(self.mgltools_path, "bin/pythonsh"),
@@ -84,7 +166,12 @@ class DockingExecutor:
             'environment': {                   
                 'MGLPY': os.path.join(self.mgltools_path, "bin/python"),
                 'PYTHONPATH': f"{os.path.join(self.mgltools_path, 'MGLToolsPckgs')}:{os.environ.get('PYTHONPATH', '')}"
-            }
+            },
+            # 添加autogrow转换需要的参数
+            'output_directory': self.output_dir,
+            'sdf_dir': self.sdf_dir,
+            'pdb_dir': self.pdb_dir,
+            'ligand_dir': self.ligand_dir
         }
 
     def _validate_paths(self):
@@ -102,46 +189,41 @@ class DockingExecutor:
     def generate_3d_conformer(self, mol, max_attempts=5):
         """使用多种方法生成3D构象,提高成功率"""
         if mol is None:
-            return None
-            
+            return None            
         # 添加氢原子
-        mol = Chem.AddHs(mol)
-        
-        # 方法1: ETKDG v3 (更现代的方法)
+        mol = Chem.AddHs(mol)        
+        # 方法1: ETKDG v3 
         for attempt in range(max_attempts):
-            seed = 42 + attempt  # 每次尝试使用不同的随机种子
+            seed = 42 + attempt  # 每次尝试使用不同的随机种子；不同种子--不同构象
             params = AllChem.ETKDGv3()
             params.randomSeed = seed
             params.numThreads = 4  # 利用多线程
             params.useSmallRingTorsions = True
             params.useBasicKnowledge = True
-            params.enforceChirality = True
-            
+            params.enforceChirality = True            
             if AllChem.EmbedMolecule(mol, params) == 0:  # 0表示成功
                 # 力场优化
                 try:
-                    AllChem.MMFFOptimizeMolecule(mol, maxIters=1000)  # 使用MMFF力场
-                    return mol
+                    AllChem.MMFFOptimizeMolecule(mol, maxIters=1000)  # MMFF力场
+                    return mol #优化之后分子返回
                 except:
                     try:
-                        AllChem.UFFOptimizeMolecule(mol, maxIters=1000)  # 备选UFF力场
+                        AllChem.UFFOptimizeMolecule(mol, maxIters=1000)  # UFF力场
                         return mol
                     except:
-                        continue  # 继续尝试下一种方法
-        
+                        continue          
         # 方法2: 基础ETKDG
-        if AllChem.EmbedMolecule(mol, useRandomCoords=True) == 0:
+        #useBasicKnowledge=True 使用基本化学知识
+        if AllChem.EmbedMolecule(mol, useRandomCoords=True) == 0: #嵌入成功
             try:
-                AllChem.UFFOptimizeMolecule(mol, maxIters=1000)
+                AllChem.UFFOptimizeMolecule(mol, maxIters=1000)#就力场优化
                 return mol
             except:
-                pass
-                
+                pass                
         # 方法3: 距离几何法
         if AllChem.EmbedMolecule(mol, useRandomCoords=True, useBasicKnowledge=True) == 0:
-            return mol
-            
-        # 所有方法都失败
+            return mol            
+        # 所有方法都失败,构象生成失败
         return None
 
     def check_valid_3d_coords(self, pdb_path):
@@ -194,6 +276,91 @@ class DockingExecutor:
             logging.error(f"解析Vina输出失败: {str(e)}")
             return None
 
+    def prepare_receptor(self):
+        """准备受体蛋白文件"""
+        logging.info("准备受体蛋白...")
+        
+        # 转换受体文件
+        receptor_pdbqt = self.receptor_pdb + "qt"
+        if not os.path.exists(receptor_pdbqt):
+            self.converter.convert_receptor_pdb_files_to_pdbqt(
+                self.receptor_pdb,
+                self.vars["mgl_python"],
+                self.vars["prepare_receptor4.py"],
+                self.vars["number_of_processors"]
+            )
+            
+        return receptor_pdbqt
+
+    def prepare_ligands_batch(self, smi_file):
+        """使用autogrow的方法批量准备配体分子"""
+        logging.info("批量准备配体分子...")
+
+        # 1. SMILES转3D SDF
+        if not os.path.exists(self.sdf_dir):
+            os.makedirs(self.sdf_dir)
+        convert_to_3d(self.vars, smi_file, self.ligand_dir)
+
+        # 2. SDF转PDB
+        convert_sdf_to_pdbs(self.vars, self.sdf_dir, self.sdf_dir)
+        pdb_dir = self.sdf_dir + "_PDB"
+        if not os.path.exists(pdb_dir):
+            raise RuntimeError(f"PDB目录未生成: {pdb_dir}")
+
+        # 只保留每个SMILES的第一个PDB
+        keep_one_pdb_per_smiles(pdb_dir)
+
+        # 3. PDB转PDBQT（加进度条）
+        pdb_files = glob.glob(os.path.join(pdb_dir, "*.pdb"))
+        pdbqt_files = []
+        for pdb_file in tqdm(pdb_files, desc="PDB转PDBQT进度"):
+            try:
+                pdbqt_file = pdb_file + "qt"
+                if not os.path.exists(pdbqt_file):
+                    cmd = [
+                        self.vars["mgl_python"],
+                        self.vars["prepare_ligand4.py"],
+                        "-l", pdb_file,
+                        "-o", pdbqt_file
+                    ]
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if os.path.exists(pdbqt_file):
+                    pdbqt_files.append(pdbqt_file)
+                time.sleep(0.5)
+            except Exception as e:
+                logging.error(f"PDBQT转换失败: {pdb_file}, 错误: {str(e)}")
+                continue
+        
+        if not pdbqt_files:
+            raise RuntimeError("没有成功生成任何PDBQT文件,无法进行后续对接。请检查MGLTools配置和PDB文件内容。")
+        
+        return pdbqt_files
+
+    def run_docking_batch(self, receptor_pdbqt, pdbqt_files):
+        """批量执行对接"""
+        logging.info(f"开始批量对接 {len(pdbqt_files)} 个分子...")
+
+        if not os.path.exists(self.results_dir):
+            os.makedirs(self.results_dir)
+
+        max_workers = min(8, os.cpu_count() or 1)
+        futures = []
+        scores = {}
+        
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for ligand_file in pdbqt_files:
+                futures.append(executor.submit(
+                    vina_dock_single, ligand_file, receptor_pdbqt, self.results_dir, self.vars
+                ))
+            
+            for future in tqdm(as_completed(futures), total=len(futures), desc="对接进度"):
+                ligand_file, success, score = future.result()
+                if success and score is not None:
+                    mol_name = os.path.basename(ligand_file).replace(".pdbqt", "")
+                    scores[mol_name] = score
+        
+        return scores
+
     def process_ligand(self, smile):
         pdb_path = None
         try:
@@ -237,61 +404,54 @@ class DockingExecutor:
                 
             # 转换为PDBQT格式
             try:
-                self.converter.convert_ligand_pdb_file_to_pdbqt(pdb_path)
-                logging.info(f"成功转换为PDBQT格式: {pdb_path}qt")
+                pdbqt_path = pdb_path + "qt"
+                cmd = [
+                    self.vars["mgl_python"],
+                    self.vars["prepare_ligand4.py"],
+                    "-l", pdb_path,
+                    "-o", pdbqt_path
+                ]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logging.info(f"成功转换为PDBQT格式: {pdbqt_path}")
             except Exception as e:
                 logging.error(f"PDBQT转换失败: {str(e)}")
                 os.rename(pdb_path, f"{pdb_path}.error")
                 return None
                 
-            pdbqt_path = pdb_path + "qt"
             if not os.path.exists(pdbqt_path):
                 logging.error(f"配体转换失败 - 没有输出文件: {smile}")
                 return None
         
             # 执行对接
             logging.info(f"开始执行对接: {smile}")
-            failed_smile = self.docker.run_dock(pdbqt_path)
+            out_file = os.path.join(self.results_dir, f"temp_{hash(smile)}_out.pdbqt")
+            log_file = os.path.join(self.results_dir, f"temp_{hash(smile)}.log")
             
-            # 检查对接是否成功
-            if failed_smile is not None:
-                logging.warning(f"对接失败: {smile}")
-                return None
-                
-            # 解析对接结果
-            vina_output = pdbqt_path + ".vina"
-            if not os.path.exists(vina_output):
-                logging.warning(f"对接输出文件不存在: {vina_output}")
-                return None
-                
-            # 从Vina输出文件中读取结果
-            results = []
-            with open(vina_output, 'r') as f:
-                for line in f:
-                    if "REMARK VINA RESULT" in line:
-                        # Vina结果格式: "REMARK VINA RESULT:    -10.1     0.000     0.000"
-                        parts = line.split()
-                        if len(parts) >= 5:
-                            try:
-                                score = float(parts[3])
-                                results.append([score, ""])
-                                logging.info(f"找到对接分数: {score}")
-                            except:
-                                continue
+            cmd = [
+                self.vars["docking_executable"],
+                "--receptor", self.receptor_pdb + "qt",
+                "--ligand", pdbqt_path,
+                "--center_x", str(self.vars["center_x"]),
+                "--center_y", str(self.vars["center_y"]),
+                "--center_z", str(self.vars["center_z"]),
+                "--size_x", str(self.vars["size_x"]),
+                "--size_y", str(self.vars["size_y"]),
+                "--size_z", str(self.vars["size_z"]),
+                "--out", out_file,
+                "--log", log_file
+            ]
             
-            # 如果没有结果，尝试解析日志文件
-            if not results:
-                docking_log = pdbqt_path + "_docking_output.txt"
-                results = self.parse_vina_output(docking_log)
-                
-            if not results:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # 从日志文件中读取对接分数
+            score = extract_vina_score(log_file)
+            
+            if score is None:
                 logging.warning(f"无法从对接输出获取分数: {smile}")
                 return None
                 
-            # 提取最佳分数
-            best_score = min(float(r[0]) for r in results)
-            logging.info(f"对接成功完成: {smile}, 最佳分数: {best_score}")
-            return best_score
+            logging.info(f"对接成功完成: {smile}, 最佳分数: {score}")
+            return score
             
         except Exception as e:
             logging.error(f"对接失败，分子: {smile}，错误: {str(e)}")
@@ -299,23 +459,30 @@ class DockingExecutor:
         finally:
             # 清理临时文件
             if pdb_path is not None:
-                for ext in ['', 'qt', '.error', '.sdf', 'qt.vina', 'qt_docking_output.txt']:
+                for ext in ['', 'qt', '.error', '.sdf']:
                     path = f"{pdb_path}{ext}"
                     if os.path.exists(path):
                         try:
                             os.remove(path)
-                            logging.debug(f"清理临时文件: {path}")
                         except:
                             pass
+            # 清理对接输出文件
+            for file_pattern in [f"temp_{hash(smile)}*"]:
+                for file_path in glob.glob(os.path.join(self.results_dir, file_pattern)):
+                    try:
+                        os.remove(file_path)
+                    except:
+                        pass
 
 # 主函数
 def main():
     parser = argparse.ArgumentParser(description='Molecular Docking Pipeline')
-    parser.add_argument('-i', '--input', default="output/generation_0_filtered.smi", help='Input SMILES file')#/data1/tgy/GA_llm/output/generation_0_filtered.smi
+    parser.add_argument('-i', '--input', default="datasets/source_compounds/naphthalene_smiles.smi", help='Input SMILES file')#/data1/tgy/GA_llm/output/generation_0_filtered.smi
     parser.add_argument('-r', '--receptor', default="tutorial/PARP/4r6eA_PARP1_prepared.pdb", help='Receptor PDB file path')#/data1/tgy/GA_llm/tutorial/PARP/4r6eA_PARP1_prepared.pdb
-    parser.add_argument('-o', '--output', default="output/docking_results/generation_0_docked.smi", help='Output file path')#/data1/tgy/GA_llm/output/docking_results/generation_o_docked.smi
+    parser.add_argument('-o', '--output', default="test_docking_0/initial_generation.smi", help='Output file path')#/data1/tgy/GA_llm/output/docking_results/generation_o_docked.smi
     parser.add_argument('-m', '--mgltools', default="mgltools_x86_64Linux2_1.5.6", help='MGLTools installation path')
     parser.add_argument('--max_failures', type=int, default=5, help='最大连续失败次数，超过此数将暂停并提示')
+    parser.add_argument('--use_batch', action='store_true', help='使用批量处理模式')
     
     args = parser.parse_args()
     
@@ -334,31 +501,61 @@ def main():
     with open(args.input) as f:
         smiles_list = [line.strip().split()[0] for line in f if line.strip()]
     
-    # 并行处理对接
-    logging.info(f"开始对接 {len(smiles_list)} 个分子...")
-    results = []
-    consecutive_failures = 0
+    # 准备受体
+    receptor_pdbqt = executor.prepare_receptor()
     
-    for i, smile in enumerate(tqdm(smiles_list, desc="对接进度")):
-        result = executor.process_ligand(smile)
-        results.append(result)
+    if args.use_batch:
+        logging.info("使用批量处理模式...")
+        # 将SMILES列表写入临时文件
+        temp_smi_file = os.path.join(executor.output_dir, "temp_smiles.smi")
+        with open(temp_smi_file, 'w') as f:
+            for i, smile in enumerate(smiles_list):
+                f.write(f"{smile} naphthalene_{i+1}\n")
         
-        # 检查是否连续失败
-        if result is None:
-            consecutive_failures += 1
-            if consecutive_failures >= args.max_failures:
-                logging.warning(f"连续失败 {consecutive_failures} 次，请检查对接配置")
-                consecutive_failures = 0  # 重置计数器
-        else:
-            consecutive_failures = 0
+        try:
+            # 批量准备配体
+            pdbqt_files = executor.prepare_ligands_batch(temp_smi_file)
             
-        # 每处理50个分子保存一次中间结果
-        if (i + 1) % 50 == 0:
-            with open(f"{args.output}.partial", 'w') as f:
-                for s, r in zip(smiles_list[:i+1], results):
-                    if r is not None:
-                        f.write(f"{s}\t{r:.2f}\n")
-            logging.info(f"已完成 {i+1}/{len(smiles_list)} 分子对接，中间结果已保存")
+            # 批量执行对接
+            scores_dict = executor.run_docking_batch(receptor_pdbqt, pdbqt_files)
+            
+            # 整理结果
+            results = []
+            for i, smile in enumerate(smiles_list):
+                mol_name = f"naphthalene_{i+1}"
+                score = scores_dict.get(mol_name)
+                results.append(score)
+        except Exception as e:
+            logging.error(f"批量处理失败: {str(e)}")
+            logging.info("切换到单分子处理模式...")
+            args.use_batch = False
+    
+    if not args.use_batch:
+        # 单分子处理模式
+        logging.info("使用单分子处理模式...")
+        results = []
+        consecutive_failures = 0
+        
+        for i, smile in enumerate(tqdm(smiles_list, desc="对接进度")):
+            result = executor.process_ligand(smile)
+            results.append(result)
+            
+            # 检查是否连续失败
+            if result is None:
+                consecutive_failures += 1
+                if consecutive_failures >= args.max_failures:
+                    logging.warning(f"连续失败 {consecutive_failures} 次，请检查对接配置")
+                    consecutive_failures = 0  # 重置计数器
+            else:
+                consecutive_failures = 0
+                
+            # 每处理50个分子保存一次中间结果
+            if (i + 1) % 50 == 0:
+                with open(f"{args.output}.partial", 'w') as f:
+                    for s, r in zip(smiles_list[:i+1], results):
+                        if r is not None:
+                            f.write(f"{s}\t{r:.2f}\n")
+                logging.info(f"已完成 {i+1}/{len(smiles_list)} 分子对接，中间结果已保存")
     
     # 写入结果文件
     success_count = 0

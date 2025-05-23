@@ -8,12 +8,8 @@ import subprocess
 import multiprocessing
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-
-# 设置项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
-
-# 配置日志
 def setup_logging(output_dir, generation_num):
     log_file = os.path.join(output_dir, f"ga_evolution_{generation_num}.log")
     logging.basicConfig(
@@ -25,7 +21,6 @@ def setup_logging(output_dir, generation_num):
         ]
     )
     return logging.getLogger("GA_llm_new")
-
 def run_decompose(input_file, output_prefix, logger):
     """运行分子分解模块"""
     logger.info(f"开始分子分解: {input_file}")
@@ -622,6 +617,28 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
     logger.info(f"种子选择完成，共选择 {len(all_seeds)} 个分子，保存至: {seed_output}")
     return seed_output, new_elite_mols
 
+def run_scoring_evaluation(docked_file, initial_population_file, output_file, logger):
+    """运行新种群的评估脚本."""
+    logger.info(f"开始对种群进行评估: {docked_file}")
+    scoring_script = os.path.join(PROJECT_ROOT, "operations/scoring/scoring_demo.py")
+    cmd = [
+        "python", scoring_script,
+        "--current_population_docked_file", docked_file,
+        "--initial_population_file", initial_population_file,
+        "--output_file", output_file
+    ]
+    
+    process = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if process.returncode != 0:
+        logger.error(f"种群评估失败: {process.stderr}")
+        # Decide if this should raise an exception or just log an error
+        # For now, just log and continue
+    else:
+        logger.info(f"种群评估完成，结果保存至: {output_file}")
+        if process.stdout:
+            logger.info(f"评估脚本输出:\n{process.stdout}")
+
 def run_evolution(generation_num, args, logger, prev_elite_mols=None):
     """执行一次完整的进化迭代，支持精英保留机制"""
     logger.info(f"开始第 {generation_num} 代进化")
@@ -642,6 +659,11 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
             docking_output, seed_output, args.top_mols_to_seed_next_generation, 
             diversity_mols, logger, args.elitism_mols_to_next_generation
         )
+        
+        # 在选完seed后，对当前代的对接结果进行评估
+        evaluation_output_file = os.path.join(output_base, f"generation_{generation_num}_evaluation_metrics.txt")
+        run_scoring_evaluation(docking_output, args.initial_population, evaluation_output_file, logger)
+
         return seed_output, new_elite_mols
     else:
         # 1. 读取上一代seed，但排除精英分子
@@ -699,6 +721,11 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
             diversity_mols, logger, args.elitism_mols_to_next_generation, prev_elite_mols
         )
         
+        # 在选完seed后，对当前代的对接结果进行评估
+        evaluation_output_file = os.path.join(output_base, f"generation_{generation_num}_evaluation_metrics.txt")
+        # 使用 args.initial_population 作为新颖性计算的基准
+        run_scoring_evaluation(docking_output, args.initial_population, evaluation_output_file, logger)
+
         # 清理临时文件
         if os.path.exists(temp_seed_file):
             os.remove(temp_seed_file)

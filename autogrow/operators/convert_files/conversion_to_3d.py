@@ -403,7 +403,7 @@ def convert_sdf_to_pdbs(vars, gen_folder_path, sdfs_folder_path):
     """
 
     files = []
-
+  
     if os.path.isdir(sdfs_folder_path):
         # so it's a directory, go through the directory and find all the sdf files
         if sdfs_folder_path[-1:] != os.sep:
@@ -530,3 +530,26 @@ def convert_single_sdf_to_pdb(pdb_subfolder_path, sdf_file_path):
                     counter = counter + 1
             else:
                 pass
+def get_smile_name_from_pdb(self, pdb_file):
+    """
+    This will return the unique identifier name for the compound
+
+    Inputs:
+    :param str pdb_file: pdb file path
+    Returns:
+    :returns: str line_stripped: the name of the SMILES string
+                            with the new lines and COMPND removed
+    """
+    line_stripped = "unknown"  # 初始化默认值
+    if os.path.exists(pdb_file):
+        with open(pdb_file, "r") as f:
+            for line in f.readlines():
+                if "COMPND" in line:
+                    line_stripped = line.replace(
+                        "COMPND", ""
+                    ).strip()  # Need to remove whitespaces on both ends
+                    line_stripped = line_stripped.replace(
+                        "\n", ""
+                    ).strip()  # Need to remove whitespaces on both ends
+                    break  # 找到第一个COMPND行就退出
+    return line_stripped    
