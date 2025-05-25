@@ -65,7 +65,7 @@ except ImportError:
                 return sascorer.calculateScore(mol)
             print("成功从rdkit.Contrib.SA_score导入SA计算函数")
         except ImportError:
-            print("警告：无法导入任何SA Score计算模块，SA分数将不可用")
+            print("警告:无法导入任何SA Score计算模块,SA分数将不可用")
             calculate_sa_original = None
 
 def load_smiles_from_file(filepath):
@@ -196,7 +196,7 @@ def calculate_qed_scores(mols):
     return qed_scores
 
 def calculate_sa_scores(mols):
-    """Calculates SA scores (1-10范围，值越低越好) for a list of RDKit Mol objects."""
+    """Calculates SA scores (1-10范围,值越低越好) for a list of RDKit Mol objects."""
     sa_scores = []
     if not calculate_sa_original or not mols:
         if not calculate_sa_original:
@@ -241,8 +241,27 @@ def main():
         print("No SMILES found in the current population file. Exiting.")
         return
 
-    # Convert SMILES to RDKit Mol objects for QED, SA, Diversity
-    # Use all SMILES from the docked file for these chemical property calculations
+    # 首先根据对接分数对分子进行排序（分数越低越好）
+    # 创建(SMILES, score)对，按分数排序
+    if scored_molecules_smiles and docking_scores:
+        molecules_with_scores = list(zip(scored_molecules_smiles, docking_scores))
+        # 按对接分数排序（越小越好）
+        molecules_with_scores.sort(key=lambda x: x[1])
+        
+        # 获取top 100分子（如果不足100个则取全部）
+        top_molecules_count = min(100, len(molecules_with_scores))
+        top_molecules = molecules_with_scores[:top_molecules_count]
+        top_smiles = [item[0] for item in top_molecules]
+        
+        print(f"Selected top {top_molecules_count} molecules for QED and SA calculation")
+        
+        # 将top分子转换为RDKit Mol对象
+        top_mols, valid_top_smiles = get_rdkit_mols(top_smiles)
+    else:
+        print("Warning: No molecules with docking scores found. Using all molecules for calculations.")
+        top_mols = []
+
+    # Convert all SMILES to RDKit Mol objects for general metrics
     all_mols, valid_smiles_for_props = get_rdkit_mols(current_smiles_list)
 
     # 1. Docking Score Metrics
@@ -255,15 +274,40 @@ def main():
     # 3. Diversity (calculated on valid RDKit molecules from the current population)
     diversity = calculate_diversity(all_mols)
     
-    # 4. QED Scores (calculated on valid RDKit molecules)
-    qed_scores = calculate_qed_scores(all_mols)
-    mean_qed = np.mean(qed_scores) if qed_scores else np.nan
+    # 4. QED Scores (计算top 100分子和全部分子)
+    # 先计算全部分子的QED
+    all_qed_scores = calculate_qed_scores(all_mols)
+    mean_all_qed = np.mean(all_qed_scores) if all_qed_scores else np.nan
     
-    # 5. SA Scores (calculated on valid RDKit molecules)
-    sa_scores = calculate_sa_scores(all_mols)
-    mean_sa = np.mean(sa_scores) if sa_scores else np.nan
+    # 再计算top分子的QED
+    if top_mols:
+        # 使用top分子计算QED
+        qed_scores = calculate_qed_scores(top_mols)
+        mean_qed = np.mean(qed_scores) if qed_scores else np.nan
+        qed_description = f"Top {top_molecules_count} Mean"
+    else:
+        # 如果没有top分子，则使用全部分子
+        qed_scores = all_qed_scores
+        mean_qed = mean_all_qed
+        qed_description = "All Molecules Mean"
+    
+    # 5. SA Scores (计算top 100分子和全部分子)
+    # 先计算全部分子的SA
+    all_sa_scores = calculate_sa_scores(all_mols)
+    mean_all_sa = np.mean(all_sa_scores) if all_sa_scores else np.nan
+    
+    # 再计算top分子的SA
+    if top_mols:
+        # 使用top分子计算SA
+        sa_scores = calculate_sa_scores(top_mols)
+        mean_sa = np.mean(sa_scores) if sa_scores else np.nan
+        sa_description = f"Top {top_molecules_count} Mean"
+    else:
+        # 如果没有top分子，则使用全部分子
+        sa_scores = all_sa_scores
+        mean_sa = mean_all_sa
+        sa_description = "All Molecules Mean"
 
-    # Prepare results
     # 安全地处理可能包含特殊字符的文件名
     population_filename = os.path.basename(args.current_population_docked_file)
     initial_population_filename = os.path.basename(args.initial_population_file)
@@ -298,14 +342,24 @@ def main():
     results += "--------------------------------------------------\n"
     
     if np.isnan(mean_qed):
-        results += "QED - Mean: N/A\n"
+        results += "QED - {} Mean: N/A\n".format(qed_description)
     else:
-        results += "QED - Mean: {:.4f}\n".format(mean_qed)
+        results += "QED - {} Mean: {:.4f}\n".format(qed_description, mean_qed)
+        
+    if np.isnan(mean_all_qed):
+        results += "QED - All Molecules Mean: N/A\n"
+    else:
+        results += "QED - All Molecules Mean: {:.4f}\n".format(mean_all_qed)
         
     if np.isnan(mean_sa):
-        results += "SA Score - Mean: N/A\n"
+        results += "SA Score - {} Mean: N/A\n".format(sa_description)
     else:
-        results += "SA Score - Mean: {:.4f}\n".format(mean_sa)
+        results += "SA Score - {} Mean: {:.4f}\n".format(sa_description, mean_sa)
+    
+    if np.isnan(mean_all_sa):
+        results += "SA Score - All Molecules Mean: N/A\n"
+    else:
+        results += "SA Score - All Molecules Mean: {:.4f}\n".format(mean_all_sa)
     
     results += "--------------------------------------------------\n"
     
