@@ -9,6 +9,19 @@ import multiprocessing
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import glob
+import threading
+
+# 尝试导入 psutil
+_psutil_available = False
+try:
+    import psutil
+    _psutil_available = True
+except ImportError:
+    print("警告: psutil库未找到或导入失败。CPU核心数检测可能不准确。请考虑运行 'pip install psutil' 来安装。")
+
+# 全局GPT串行锁
+_gpt_serial_lock = threading.Lock()
+
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -26,26 +39,30 @@ def setup_logging(output_dir, generation_num):
 
 # 定义receptor_info_list，包含所有受体的信息---10种受体蛋白
 receptor_info_list = [
-    ('4r6e', './pdb/4r6e.pdb', -70.76, 21.82, 28.33, 15.0, 15.0, 15.0),
-    ('3pbl', './pdb/3pbl.pdb', 9, 22.5, 26, 15, 15, 15),
-    ('1iep', './pdb/1iep.pdb', 15.6138918, 53.38013513, 15.454837, 15, 15, 15),
-    ('2rgp', './pdb/2rgp.pdb', 16.29212, 34.870818, 92.0353, 15, 15, 15),
-    ('3eml', './pdb/3eml.pdb', -9.06363, -7.1446, 55.86259999, 15, 15, 15),
-    ('3ny8', './pdb/3ny8.pdb', 2.2488, 4.68495, 51.39820000000001, 15, 15, 15),
-    ('4rlu', './pdb/4rlu.pdb', -0.73599, 22.75547, -31.23689, 15, 15, 15),
-    ('4unn', './pdb/4unn.pdb', 5.684346153, 18.1917, -7.3715, 15, 15, 15),
-    ('5mo4', './pdb/5mo4.pdb', -44.901, 20.490354, 8.48335, 15, 15, 15),
-    ('7l11', './pdb/7l11.pdb', -21.81481, -4.21606, -27.98378, 15, 15, 15),
+    ('4r6e', os.path.join(PROJECT_ROOT, 'pdb', '4r6e.pdb'), -70.76, 21.82, 28.33, 15.0, 15.0, 15.0),
+    ('3pbl', os.path.join(PROJECT_ROOT, 'pdb', '3pbl.pdb'), 9, 22.5, 26, 15, 15, 15),
+    ('1iep', os.path.join(PROJECT_ROOT, 'pdb', '1iep.pdb'), 15.6138918, 53.38013513, 15.454837, 15, 15, 15),
+    ('2rgp', os.path.join(PROJECT_ROOT, 'pdb', '2rgp.pdb'), 16.29212, 34.870818, 92.0353, 15, 15, 15),
+    ('3eml', os.path.join(PROJECT_ROOT, 'pdb', '3eml.pdb'), -9.06363, -7.1446, 55.86259999, 15, 15, 15),
+    ('3ny8', os.path.join(PROJECT_ROOT, 'pdb', '3ny8.pdb'), 2.2488, 4.68495, 51.39820000000001, 15, 15, 15),
+    ('4rlu', os.path.join(PROJECT_ROOT, 'pdb', '4rlu.pdb'), -0.73599, 22.75547, -31.23689, 15, 15, 15),
+    ('4unn', os.path.join(PROJECT_ROOT, 'pdb', '4unn.pdb'), 5.684346153, 18.1917, -7.3715, 15, 15, 15),
+    ('5mo4', os.path.join(PROJECT_ROOT, 'pdb', '5mo4.pdb'), -44.901, 20.490354, 8.48335, 15, 15, 15),
+    ('7l11', os.path.join(PROJECT_ROOT, 'pdb', '7l11.pdb'), -21.81481, -4.21606, -27.98378, 15, 15, 15),
 ]
 
-def run_decompose(input_file, output_prefix, logger):    
-    logger.info(f"开始分子分解: {input_file}")       
-    decompose_dir = os.path.join(PROJECT_ROOT, "datasets/decompose/decompose_results")
-    os.makedirs(decompose_dir, exist_ok=True)      
-    output_file = os.path.join(decompose_dir, f"frags_result_{output_prefix}.smi")
-    output_file2 = os.path.join(decompose_dir, f"frags_seq_{output_prefix}.smi")
-    output_file3 = os.path.join(decompose_dir, f"truncated_frags_{output_prefix}.smi")
-    output_file4 = os.path.join(decompose_dir, f"decomposable_mols_{output_prefix}.smi")    
+def run_decompose(input_file, output_prefix, logger, current_gen_output_dir):
+    logger.info(f"开始分子分解: {input_file} (输出到: {current_gen_output_dir})")
+    decompose_base_dir = os.path.join(current_gen_output_dir, "decompose_results")
+    os.makedirs(decompose_base_dir, exist_ok=True)
+
+    # 使用 output_prefix 来确保在同一代中，不同调用（如果发生）的文件名是唯一的
+    # 例如，如果 output_prefix 是 "gen1_seed_target_4r6e"
+    output_file = os.path.join(decompose_base_dir, f"frags_result_{output_prefix}.smi")
+    output_file2 = os.path.join(decompose_base_dir, f"frags_seq_{output_prefix}.smi")
+    output_file3 = os.path.join(decompose_base_dir, f"truncated_frags_{output_prefix}.smi") # 这是通常被下游使用的文件
+    output_file4 = os.path.join(decompose_base_dir, f"decomposable_mols_{output_prefix}.smi")
+
     decompose_script = os.path.join(PROJECT_ROOT, "datasets/decompose/demo_frags.py")
     cmd = [
         "python", decompose_script,
@@ -54,25 +71,139 @@ def run_decompose(input_file, output_prefix, logger):
         "-o2", output_file2,
         "-o3", output_file3,
         "-o4", output_file4
-    ]    
-    process = subprocess.run(cmd, capture_output=True, text=True)      
+    ]
+    logger.info(f"执行分子分解命令: {' '.join(cmd)}")
+    process = subprocess.run(cmd, capture_output=True, text=True)
+
+    if process.returncode != 0:
+        logger.error(f"分子分解失败。返回码: {process.returncode}")
+        logger.error(f"Stdout: {process.stdout}")
+        logger.error(f"Stderr: {process.stderr}")
+        raise Exception(f"分子分解失败: {input_file}")
+    else:
+        logger.info(f"分子分解成功。主要输出文件: {output_file3}")
+
+    if not os.path.exists(output_file3):
+        logger.error(f"分子分解声称成功，但主要输出文件未找到: {output_file3}")
+        raise Exception(f"分子分解后文件丢失: {output_file3}")
+
     return output_file3
-def run_gpt_generation(input_file, output_prefix, gen_num, logger):
+
+def run_gpt_generation(input_file, output_prefix, gen_num, logger, current_gen_output_dir, gpt_serial_mode=False):
     """运行GPT生成新分子"""
-    logger.info(f"开始GPT生成: {input_file}")    
-    output_dir = os.path.join(PROJECT_ROOT, "fragment_GPT/output")
-    os.makedirs(output_dir, exist_ok=True)
-    fixed_output_file = os.path.join(output_dir, f"crossovered{gen_num}_frags_new_{gen_num}.smi")
-    generate_script = os.path.join(PROJECT_ROOT, "fragment_GPT/generate_all.py")
-    cmd = [
-        "python", generate_script,
-        "--input_file", input_file,
-        "--output_file", fixed_output_file,  # 明确指定输出文件
-        "--device", "0",
-        "--seed", str(gen_num)
-    ]    
-    process = subprocess.run(cmd, capture_output=True, text=True)    
-    return fixed_output_file   
+    logger.info(f"开始GPT生成: {input_file} (输出到: {current_gen_output_dir}, 串行模式: {gpt_serial_mode})")
+    
+    # 如果启用GPT串行模式，获取全局锁
+    if gpt_serial_mode:
+        logger.info("GPT串行模式已启用,等待获取串行锁...")
+        _gpt_serial_lock.acquire()
+        logger.info("已获取GPT串行锁,开始执行...")
+    
+    try:
+        # 为GPT生成创建一个专用的子目录，以避免与同一代数的其他文件冲突
+        gpt_output_base_dir = os.path.join(current_gen_output_dir, "fragment_GPT_output")
+        os.makedirs(gpt_output_base_dir, exist_ok=True)       
+        # 默认输出位置：PROJECT_ROOT/fragment_GPT/output/
+        # 输出文件名：crossovered0_frags_new_{seed}.smi (有效分子)
+        # 输出文件名：crossovered0_fragsCom_new_{seed}.smi (所有生成内容)        
+        # 创建更独特的seed以避免并行冲突
+        # 使用当前时间戳的后几位 + gen_num + output_prefix的哈希值
+        import hashlib
+        import time
+        timestamp_suffix = int(time.time() * 1000) % 10000  # 取时间戳的后4位
+        prefix_hash = abs(hash(output_prefix)) % 1000  # 取output_prefix哈希的后3位
+        unique_seed = int(f"{gen_num}{timestamp_suffix}{prefix_hash}")        
+        # GPU设备分配策略：基于output_prefix选择GPU设备
+        # 检查可用的GPU数量
+        if gpt_serial_mode:
+            # 串行模式下始终使用GPU 0
+            gpu_id = 0
+            logger.info(f"GPT串行模式:使用GPU 0")
+        else:
+            try:
+                import torch
+                gpu_count = torch.cuda.device_count()
+                if gpu_count > 1:
+                    # 基于output_prefix的哈希值分配GPU
+                    gpu_id = abs(hash(output_prefix)) % gpu_count
+                    logger.info(f"检测到 {gpu_count} 个GPU,为此任务分配GPU {gpu_id}")
+                else:
+                    gpu_id = 0
+                    logger.info(f"只有1个GPU可用,使用GPU 0")
+            except:
+                gpu_id = 0
+                logger.warning(f"无法检测GPU数量,默认使用GPU 0")
+        
+        logger.info(f"使用独特seed: {unique_seed} (基于gen_num={gen_num}, timestamp_suffix={timestamp_suffix}, prefix_hash={prefix_hash})")
+        
+        generate_script = os.path.join(PROJECT_ROOT, "fragment_GPT/generate_all.py")
+        cmd = [
+            "python", generate_script,
+            "--input_file", input_file,
+            "--device", str(gpu_id), # 使用分配的GPU设备
+            "--seed", str(unique_seed) # 使用独特的seed
+        ]
+        logger.info(f"执行GPT生成命令: {' '.join(cmd)}")
+        process = subprocess.run(cmd, capture_output=True, text=True)
+
+        if process.returncode != 0:
+            logger.error(f"GPT生成失败。返回码: {process.returncode}")
+            logger.error(f"Stdout: {process.stdout}")
+            logger.error(f"Stderr: {process.stderr}")
+            raise Exception(f"GPT生成失败: {input_file}")
+        else:
+            logger.info(f"GPT生成脚本执行成功")
+
+        # 检查并复制生成的文件到目标位置
+        # 脚本生成的文件位置（使用unique_seed）
+        default_output_dir = os.path.join(PROJECT_ROOT, "fragment_GPT/output")
+        source_valid_file = os.path.join(default_output_dir, f"crossovered0_frags_new_{unique_seed}.smi")
+        source_complete_file = os.path.join(default_output_dir, f"crossovered0_fragsCom_new_{unique_seed}.smi")
+        
+        # 目标文件位置（使用更独特的文件名）
+        target_valid_file = os.path.join(gpt_output_base_dir, f"{output_prefix}_gpt_valid_mols_gen{gen_num}.smi")
+        target_complete_file = os.path.join(gpt_output_base_dir, f"{output_prefix}_gpt_complete_mols_gen{gen_num}.smi")
+        
+        # 复制文件
+        import shutil
+        try:
+            if os.path.exists(source_valid_file):
+                shutil.copy2(source_valid_file, target_valid_file)
+                logger.info(f"已复制有效分子文件: {source_valid_file} -> {target_valid_file}")
+            else:
+                logger.warning(f"源文件不存在: {source_valid_file}")
+                
+            if os.path.exists(source_complete_file):
+                shutil.copy2(source_complete_file, target_complete_file)
+                logger.info(f"已复制完整生成文件: {source_complete_file} -> {target_complete_file}")
+            else:
+                logger.warning(f"源文件不存在: {source_complete_file}")
+                
+            # 清理源文件以避免下次冲突
+            if os.path.exists(source_valid_file):
+                os.remove(source_valid_file)
+                logger.info(f"已清理源文件: {source_valid_file}")
+            if os.path.exists(source_complete_file):
+                os.remove(source_complete_file)
+                logger.info(f"已清理源文件: {source_complete_file}")
+                
+        except Exception as e:
+            logger.error(f"复制文件时出错: {str(e)}")
+            raise Exception(f"GPT生成后文件处理失败: {str(e)}")
+
+        # 检查目标文件是否存在
+        if not os.path.exists(target_valid_file):
+            logger.error(f"GPT生成后,目标文件未找到: {target_valid_file}")
+            raise Exception(f"GPT生成后文件丢失: {target_valid_file}")
+
+        logger.info(f"GPT生成成功。主要输出文件: {target_valid_file}")
+        return target_valid_file
+        
+    finally:
+        # 如果启用GPT串行模式，释放全局锁
+        if gpt_serial_mode:
+            _gpt_serial_lock.release()
+            logger.info("已释放GPT串行锁")
 
 def run_crossover(source_file, llm_file, output_file, gen_num, num_crossovers, logger):
     """运行分子交叉"""
@@ -90,6 +221,7 @@ def run_crossover(source_file, llm_file, output_file, gen_num, num_crossovers, l
     process = subprocess.run(cmd, capture_output=True, text=True)    
     logger.info(f"分子交叉完成，生成文件: {output_file}")
     return output_file
+
 def run_mutation(input_file, llm_file, output_file, num_mutations, logger):
     """运行分子变异"""
     logger.info(f"开始分子变异: 输入文件 {input_file}, LLM生成文件 {llm_file}, 变异生成新个体数目 {num_mutations}")
@@ -408,7 +540,7 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
     return seed_output, new_elite_mols
 
 def limit_population_size(input_file, max_size, output_file=None):
-    """限制种群大小，保留前max_size个分子"""
+    """限制种群大小,保留前max_size个分子"""
     if output_file is None:
         output_file = input_file
     
@@ -451,6 +583,10 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
             diversity_mols, logger, args.elitism_mols_to_next_generation
         )
 
+        # 对第0代的对接结果进行评估
+        evaluation_output_file = os.path.join(output_base, "generation_0_evaluation_metrics.txt")
+        run_scoring_evaluation(docking_output, args.initial_population, evaluation_output_file, logger)
+        
         return seed_output, new_elite_mols
     else:
         # 1. 读取上一代seed文件
@@ -458,10 +594,12 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
         logger.info(f"读取上一代种子文件: {prev_seed_file}")
         
         # 2. 分子分解
-        decompose_output = run_decompose(prev_seed_file, f"gen{generation_num}_seed", logger)
+        decompose_prefix = f"target_{target}_gen{generation_num}_seed"
+        decompose_output = run_decompose(prev_seed_file, decompose_prefix, logger, output_base)
         
         # 3. GPT生成新分子，并将这些新分子保留
-        gpt_output = run_gpt_generation(decompose_output, f"gen{generation_num}_seed", generation_num, logger)
+        gpt_prefix = f"target_{target}_gen{generation_num}_seed"
+        gpt_output = run_gpt_generation(decompose_output, gpt_prefix, generation_num, logger, output_base, args.gpt_serial_mode)
         logger.info(f"GPT生成的新分子将直接加入新种群")
         
         # 4. 种子之间进行交叉操作
@@ -521,7 +659,33 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
             diversity_mols, logger, args.elitism_mols_to_next_generation, prev_elite_mols
         )
 
+        # 9. 对当前代的对接结果进行评估
+        evaluation_output_file = os.path.join(output_base, f"generation_{generation_num}_evaluation_metrics.txt")
+        run_scoring_evaluation(docking_output, args.initial_population, evaluation_output_file, logger)
+
         return seed_output, new_elite_mols
+
+def run_scoring_evaluation(docked_file, initial_population_file, output_file, logger):
+    """运行新种群的评估脚本."""
+    logger.info(f"开始对种群进行评估: {docked_file}")
+    scoring_script = os.path.join(PROJECT_ROOT, "operations/scoring/scoring_demo.py")
+    cmd = [
+        "python", scoring_script,
+        "--current_population_docked_file", docked_file,
+        "--initial_population_file", initial_population_file,
+        "--output_file", output_file
+    ]
+    
+    process = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if process.returncode != 0:
+        logger.error(f"种群评估失败: {process.stderr}")
+        # Decide if this should raise an exception or just log an error
+        # For now, just log and continue
+    else:
+        logger.info(f"种群评估完成，结果保存至: {output_file}")
+        if process.stdout:
+            logger.info(f"评估脚本输出:\n{process.stdout}")
 
 def run_evolution_for_target(target, args, generations):
     """为单个受体运行完整的进化过程"""
@@ -566,7 +730,9 @@ def run_evolution_for_target(target, args, generations):
         docking_output = os.path.join(gen0_output_dir, "generation_0_docked.smi")
         run_docking(target_args.initial_population, docking_output, target_args.receptor_file, 
                    target_args.mgltools_path, logger, target_args.number_of_processors, 
-                   target_args.multithread_mode)
+                   target_args.multithread_mode,
+                   center_x=target_args.center_x, center_y=target_args.center_y, center_z=target_args.center_z,
+                   size_x=target_args.size_x, size_y=target_args.size_y, size_z=target_args.size_z)
         
         # 计算统计信息
         calculate_and_print_stats(docking_output, 0, logger)
@@ -578,6 +744,10 @@ def run_evolution_for_target(target, args, generations):
             docking_output, seed_output, target_args.top_mols_to_seed_next_generation, 
             diversity_mols, logger, target_args.elitism_mols_to_next_generation
         )
+        
+        # 对第0代的对接结果进行评估
+        evaluation_output_file = os.path.join(gen0_output_dir, "generation_0_evaluation_metrics.txt")
+        run_scoring_evaluation(docking_output, target_args.initial_population, evaluation_output_file, logger)
         
         end_time = time.time()
         logger.info(f"第0代完成,耗时: {end_time - start_time:.2f}秒")
@@ -612,10 +782,12 @@ def run_evolution_for_target(target, args, generations):
             logger.info(f"读取上一代种子文件: {prev_seed_file}")
             
             # 2. 分子分解
-            decompose_output = run_decompose(prev_seed_file, f"gen{gen}_seed", logger)
+            decompose_prefix = f"target_{target}_gen{gen}_seed"
+            decompose_output = run_decompose(prev_seed_file, decompose_prefix, logger, gen_output_dir)
             
             # 3. GPT生成新分子，并将这些新分子保留
-            gpt_output = run_gpt_generation(decompose_output, f"gen{gen}_seed", gen, logger)
+            gpt_prefix = f"target_{target}_gen{gen}_seed"
+            gpt_output = run_gpt_generation(decompose_output, gpt_prefix, gen, logger, gen_output_dir, target_args.gpt_serial_mode)
             logger.info(f"GPT生成的新分子将直接加入新种群")
             
             # 4. 种子之间进行交叉操作
@@ -666,7 +838,9 @@ def run_evolution_for_target(target, args, generations):
             docking_output = os.path.join(gen_output_dir, f"generation_{gen}_docked.smi")
             run_docking(new_population_file, docking_output, target_args.receptor_file, 
                        target_args.mgltools_path, logger, target_args.number_of_processors, 
-                       target_args.multithread_mode)
+                       target_args.multithread_mode,
+                       center_x=target_args.center_x, center_y=target_args.center_y, center_z=target_args.center_z,
+                       size_x=target_args.size_x, size_y=target_args.size_y, size_z=target_args.size_z)
             calculate_and_print_stats(docking_output, gen, logger)
             
             # 8. 选择下一代种子
@@ -677,6 +851,10 @@ def run_evolution_for_target(target, args, generations):
                 docking_output, seed_output, target_args.top_mols_to_seed_next_generation, 
                 diversity_mols, logger, target_args.elitism_mols_to_next_generation, elite_mols
             )
+            
+            # 9. 对当前代的对接结果进行评估
+            evaluation_output_file = os.path.join(gen_output_dir, f"generation_{gen}_evaluation_metrics.txt")
+            run_scoring_evaluation(docking_output, target_args.initial_population, evaluation_output_file, logger)
             
             end_time = time.time()
             logger.info(f"第 {gen} 代进化完成，耗时: {end_time - start_time:.2f}秒")
@@ -692,6 +870,9 @@ def run_evolution_for_target(target, args, generations):
 
 def get_available_cpu_count():
     """获取当前系统可用的CPU核心数量"""
+    if not _psutil_available:
+        print("psutil库不可用,将使用os.cpu_count()返回所有核心数。")
+        return os.cpu_count()
     try:
         # 获取CPU使用率小于80%的核心数量
         cpu_percent = psutil.cpu_percent(interval=0.5, percpu=True)
@@ -701,10 +882,13 @@ def get_available_cpu_count():
         return max(1, available_cores)
     except Exception as e:
         # 如果无法获取CPU使用情况，默认使用全部核心
-        print(f"无法获取CPU使用情况: {str(e)}，将使用全部核心")
+        print(f"使用psutil获取CPU使用情况时出错: {str(e)}，将使用全部核心")
         return os.cpu_count()
 
-def run_docking(input_file, output_file, receptor_file, mgltools_path, logger, num_processors=1, multithread_mode="serial"):
+def run_docking(input_file, output_file, receptor_file, mgltools_path, logger, 
+                num_processors=1, multithread_mode="serial",
+                center_x=None, center_y=None, center_z=None, 
+                size_x=None, size_y=None, size_z=None):
     """运行分子对接，针对单个受体蛋白"""
     logger.info(f"开始分子对接: {input_file} 对接到 {receptor_file}")
     
@@ -730,6 +914,14 @@ def run_docking(input_file, output_file, receptor_file, mgltools_path, logger, n
         "--multithread_mode", multithread_mode
     ]
     
+    # 添加对接盒子参数到命令中（如果已提供）
+    if center_x is not None: cmd.extend(["--center_x", str(center_x)])
+    if center_y is not None: cmd.extend(["--center_y", str(center_y)])
+    if center_z is not None: cmd.extend(["--center_z", str(center_z)])
+    if size_x is not None: cmd.extend(["--size_x", str(size_x)])
+    if size_y is not None: cmd.extend(["--size_y", str(size_y)])
+    if size_z is not None: cmd.extend(["--size_z", str(size_z)])
+
     logger.info(f"执行对接命令: {' '.join(cmd)}")
     process = subprocess.run(cmd, capture_output=True, text=True)
     
@@ -744,13 +936,13 @@ def main():
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='GA_llm_rga - 基于多受体对接的分子进化与生成流程')
     
-    # 检查psutil库依赖
-    try:
-        import psutil
-    except ImportError:
-        print("警告: 未找到psutil库,无法检测CPU空闲核心数量")
-        print("请使用 'pip install psutil' 安装此依赖，或直接指定--max_workers参数")
-        print("程序将继续执行,但会使用全部可用CPU核心...\n")
+    # 检查psutil库依赖 
+    # try:
+    #     import psutil
+    # except ImportError:
+    #     print("警告: 未找到psutil库,无法检测CPU空闲核心数量")
+    #     print("请使用 'pip install psutil' 安装此依赖，或直接指定--max_workers参数")
+    #     print("程序将继续执行,但会使用全部可用CPU核心...\\n")
     
     # 基本参数
     parser.add_argument('--generations', type=int, default=5, 
@@ -797,6 +989,8 @@ def main():
     parser.add_argument('--multithread_mode', default="multithreading",
                         choices=["mpi", "multithreading", "serial"],
                         help='多线程模式选择: mpi, multithreading, 或 serial。serial模式将忽略处理器数量设置,强制使用单处理器。')
+    parser.add_argument('--gpt_serial_mode', action='store_true', default=False,
+                        help='GPT生成是否使用串行模式。如果GPU显存不足,建议启用此选项。启用后,即使其他操作并行执行,GPT生成也会串行进行。')
     
     # 过滤器参数
     parser.add_argument('--LipinskiStrictFilter', action='store_true', default=False,

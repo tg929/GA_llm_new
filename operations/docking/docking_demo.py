@@ -17,8 +17,6 @@ from autogrow.operators.convert_files.conversion_to_3d import convert_to_3d
 from autogrow.operators.convert_files.conversion_to_3d import convert_sdf_to_pdbs
 from autogrow.docking.docking_class.docking_class_children.vina_docking import VinaDocking
 from autogrow.docking.docking_class.docking_file_conversion.convert_with_mgltools import MGLToolsConversion
-
-# 配置日志
 def setup_logging(output_dir):
     logging.basicConfig(
         level=logging.INFO,
@@ -29,8 +27,7 @@ def setup_logging(output_dir):
         ]
     )
 
-def extract_vina_score(log_file):
-    """从Vina日志文件中提取对接得分"""
+def extract_vina_score(log_file):    
     try:
         with open(log_file, "r") as f:
             for line in f:
@@ -98,7 +95,8 @@ def vina_dock_single(ligand_file, receptor_pdbqt, results_dir, vars):
 
 # 对接执行器类
 class DockingExecutor:
-    def __init__(self, receptor_pdb, output_dir, mgltools_path, number_of_processors):
+    def __init__(self, receptor_pdb, output_dir, mgltools_path, number_of_processors,
+                 center_x, center_y, center_z, size_x, size_y, size_z):
         self.receptor_pdb = receptor_pdb
         self.output_dir = os.path.abspath(output_dir)
         self.mgltools_path = mgltools_path
@@ -114,22 +112,20 @@ class DockingExecutor:
         for dir_path in [self.ligand_dir, self.sdf_dir, self.pdb_dir, self.results_dir]:
             os.makedirs(dir_path, exist_ok=True)
         
-        # 初始化对接参数
+        # 初始化对接参数，使用传入的对接盒子信息
         self.docking_params = {
-            'center_x': -70.76,   # PARP1结合口袋坐标
-            'center_y': 21.82,
-            'center_z': 28.33,
-            'size_x': 25.0,       # 对接盒尺寸
-            'size_y': 16.0,
-            'size_z': 25.0,
+            'center_x': center_x,
+            'center_y': center_y,
+            'center_z': center_z,
+            'size_x': size_x,
+            'size_y': size_y,
+            'size_z': size_z,
             'exhaustiveness': 8,
             'num_modes': 9,
-            'timeout': 120         # 单次对接超时时间（秒）
-        }
-        
+            'timeout': 120
+        }        
         # 准备VINA需要的变量
-        self.vars = self._prepare_vars()
-        
+        self.vars = self._prepare_vars()        
         # 初始化文件转换器
         self.converter = MGLToolsConversion(
             vars=self.vars, 
@@ -156,20 +152,19 @@ class DockingExecutor:
             'number_of_processors': self.number_of_processors,
             'debug_mode': False,
             'timeout_vs_gtimeout': 'timeout',  
-            'docking_timeout_limit': 120,
-            'center_x': -70.76,   # PARP1结合口袋坐标
-            'center_y': 21.82,
-            'center_z': 28.33,
-            'size_x': 25.0,       # 对接盒尺寸
-            'size_y': 16.0,
-            'size_z': 25.0,
-            'docking_exhaustiveness': 8,  
-            'docking_num_modes': 9,       
+            'docking_timeout_limit': self.docking_params['timeout'],
+            'center_x': self.docking_params['center_x'],
+            'center_y': self.docking_params['center_y'],
+            'center_z': self.docking_params['center_z'],
+            'size_x': self.docking_params['size_x'],
+            'size_y': self.docking_params['size_y'],
+            'size_z': self.docking_params['size_z'],
+            'docking_exhaustiveness': self.docking_params['exhaustiveness'],
+            'docking_num_modes': self.docking_params['num_modes'],
             'environment': {                   
                 'MGLPY': os.path.join(self.mgltools_path, "bin/python"),
                 'PYTHONPATH': f"{os.path.join(self.mgltools_path, 'MGLToolsPckgs')}:{os.environ.get('PYTHONPATH', '')}"
             },
-            # 添加autogrow转换需要的参数
             'output_directory': self.output_dir,
             'sdf_dir': self.sdf_dir,
             'pdb_dir': self.pdb_dir,
@@ -543,6 +538,19 @@ def main():
     parser.add_argument('--number_of_processors', '-p', type=int, default=-1, 
                         help='Number of processors to use for parallel tasks. -1 for all available CPU cores.')
     
+    # 为对接盒子添加命令行参数
+    parser.add_argument('--center_x', type=float, required=True, help='Docking box center X coordinate')
+    parser.add_argument('--center_y', type=float, required=True, help='Docking box center Y coordinate')
+    parser.add_argument('--center_z', type=float, required=True, help='Docking box center Z coordinate')
+    parser.add_argument('--size_x', type=float, required=True, help='Docking box size X dimension')
+    parser.add_argument('--size_y', type=float, required=True, help='Docking box size Y dimension')
+    parser.add_argument('--size_z', type=float, required=True, help='Docking box size Z dimension')
+
+    # 添加 --multithread_mode 参数
+    parser.add_argument('--multithread_mode', default="serial", 
+                        choices=["mpi", "multithreading", "serial"],
+                        help='Multithreading mode for docking (if applicable internally by VinaDocking or similar classes)')
+
     args = parser.parse_args()
     
     # Determine the actual number of processors to use
@@ -576,7 +584,14 @@ def main():
         receptor_pdb=args.receptor,
         output_dir=os.path.dirname(args.output),
         mgltools_path=args.mgltools,
-        number_of_processors=actual_num_processors
+        number_of_processors=actual_num_processors,
+        # 传递对接盒子参数
+        center_x=args.center_x,
+        center_y=args.center_y,
+        center_z=args.center_z,
+        size_x=args.size_x,
+        size_y=args.size_y,
+        size_z=args.size_z
     )
     
     # 读取输入文件

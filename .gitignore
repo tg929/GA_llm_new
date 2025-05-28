@@ -32,3 +32,4 @@ datasets/decompose/decompose_results/*.smi
 batch_*
 autogrow4.0/*
 *.pdbqtqt
+*.partial

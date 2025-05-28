@@ -9,18 +9,18 @@ from tqdm import tqdm
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-# 定义receptor_info_list，包含所有受体的信息
+# 定义receptor_info_list，包含所有受体的信息(与rga对比)
 receptor_info_list = [
-    ('4r6e', '/pdb/4r6e.pdb', -70.76, 21.82, 28.33, 15.0, 15.0, 15.0),
-    ('3pbl', '/pdb/3pbl.pdb', 9, 22.5, 26, 15.0, 15.0, 15.0),
-    ('1iep', '/pdb/1iep.pdb', 15.6138918, 53.38013513, 15.454837, 15.0, 15.0, 15.0),
-    ('2rgp', '/pdb/2rgp.pdb', 16.29212, 34.870818, 92.0353, 15.0, 15.0, 15.0),
-    ('3eml', '/pdb/3eml.pdb', -9.06363, -7.1446, 55.86259999, 15.0, 15.0, 15.0),
-    ('3ny8', '/pdb/3ny8.pdb', 2.2488, 4.68495, 51.39820000000001, 15.0, 15.0, 15.0),
-    ('4rlu', '/pdb/4rlu.pdb', -0.73599, 22.75547, -31.23689, 15.0, 15.0, 15.0),
-    ('4unn', '/pdb/4unn.pdb', 5.684346153, 18.1917, -7.3715, 15.0, 15.0, 15.0),
-    ('5mo4', '/pdb/5mo4.pdb', -44.901, 20.490354, 8.48335, 15.0, 15.0, 15.0),
-    ('7l11', '/pdb/7l11.pdb', -21.81481, -4.21606, -27.98378, 15.0, 15.0, 15.0),
+    ('4r6e', './pdb/4r6e.pdb', -70.76, 21.82, 28.33, 15.0, 15.0, 15.0),
+    ('3pbl', './pdb/3pbl.pdb', 9, 22.5, 26, 15.0, 15.0, 15.0),
+    ('1iep', './pdb/1iep.pdb', 15.6138918, 53.38013513, 15.454837, 15.0, 15.0, 15.0),
+    ('2rgp', './pdb/2rgp.pdb', 16.29212, 34.870818, 92.0353, 15.0, 15.0, 15.0),
+    ('3eml', './pdb/3eml.pdb', -9.06363, -7.1446, 55.86259999, 15.0, 15.0, 15.0),
+    ('3ny8', './pdb/3ny8.pdb', 2.2488, 4.68495, 51.39820000000001, 15.0, 15.0, 15.0),
+    ('4rlu', './pdb/4rlu.pdb', -0.73599, 22.75547, -31.23689, 15.0, 15.0, 15.0),
+    ('4unn', './pdb/4unn.pdb', 5.684346153, 18.1917, -7.3715, 15.0, 15.0, 15.0),
+    ('5mo4', './pdb/5mo4.pdb', -44.901, 20.490354, 8.48335, 15.0, 15.0, 15.0),
+    ('7l11', './pdb/7l11.pdb', -21.81481, -4.21606, -27.98378, 15.0, 15.0, 15.0),
 ]
 
 # 配置日志
@@ -75,7 +75,12 @@ def run_single_receptor_docking(input_file, output_file, receptor_info, mgltools
         "-r", receptor_path,
         "-o", output_file,
         "-m", mgltools_path,
-        "--max_failures", "5"
+        "--center_x", str(center_x),
+        "--center_y", str(center_y),
+        "--center_z", str(center_z),
+        "--size_x", str(size_x),
+        "--size_y", str(size_y),
+        "--size_z", str(size_z)
     ]
     
     try:
@@ -136,11 +141,9 @@ def dock_all_receptors(input_file, output_dir, targets, mgltools_path, logger):
 
 def calculate_multi_receptor_scores(docking_results, output_file, logger):
     """计算多受体对接的综合得分"""
-    logger.info("计算多受体对接综合得分")
-    
+    logger.info("计算多受体对接综合得分")    
     # 读取所有对接结果
-    molecules = {}  # 分子SMILES -> {受体 -> 得分}
-    
+    molecules = {}  # 分子SMILES -> {受体 -> 得分}    
     for target, result_file in docking_results.items():
         try:
             with open(result_file, 'r') as f:
@@ -183,7 +186,7 @@ def calculate_multi_receptor_scores(docking_results, output_file, logger):
 def main():
     parser = argparse.ArgumentParser(description='多受体autodock vina分子对接脚本')
     parser.add_argument('-i', '--input', required=True, help='输入SMILES文件')
-    parser.add_argument('-o', '--output_dir', default="output/docking_utils_demo", help='输出目录')
+    parser.add_argument('-o', '--output_dir', default="output_docking_utils", help='输出目录')
     parser.add_argument('--targets', nargs='+', default=['4r6e', '3pbl', '1iep', '2rgp', '3eml', '3ny8', '4rlu', '4unn', '5mo4', '7l11'], help='受体蛋白列表')
     parser.add_argument('-m', '--mgltools_path', default=os.path.join(PROJECT_ROOT, "mgltools_x86_64Linux2_1.5.6"), help='MGLTools安装路径')
     args = parser.parse_args()

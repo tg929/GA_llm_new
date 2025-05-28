@@ -1,5 +1,5 @@
 # Code adapted from https://github.com/SeulLee05/MOOD/blob/main/scorer/docking.py
-
+#其实没有用到
 import sys
 import os
 from shutil import rmtree
@@ -11,8 +11,6 @@ from openbabel import pybel
 import tempfile, os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
-
-
 class DockingVina(object):
     def __init__(self, target):
         super().__init__()
@@ -49,13 +47,14 @@ class DockingVina(object):
         self.protein = target
         self.vina_program = f'autogrow/docking/docking_executables/vina/autodock_vina_1_1_2_linux_x86/bin/vina'
         self.receptor_file = f'pdb/{target}.pdbqt'
-        self.exhaustiveness = 1
-        self.num_sub_proc = 1
-        self.num_cpu_dock = 32
+        self.exhaustiveness = 1  #从是随机配体结构开始的独立运行的数量
+        #(每一次运行都由连续的局部优化步骤组成，其中包括对评分函数及其在位置-方向-扭矩坐标中的导数的许多评估)。
+        #Exhaustiveness通常直接与运行时间相关。Exhaustiveness越低对接速度越快，Exhaustiveness越高搜索空间更全面
+        self.num_sub_proc = 1#
+        self.num_cpu_dock = 32#对接CPU
         self.num_modes = 10
         self.timeout_gen3d = 30
         self.timeout_dock = 100
-
         tmp_base = os.path.join(PROJECT_ROOT, "docking/tmp/")
         os.makedirs(tmp_base, exist_ok=True)
         tmp_dir = tempfile.mkdtemp(prefix="tmp_", dir=tmp_base)
@@ -71,7 +70,7 @@ class DockingVina(object):
         #         break
         #     i += 1
 
-    def gen_3d(self, smi, ligand_mol_file):
+    def gen_3d(self, smi, ligand_mol_file):#obabel生成3d结构
         """
             generate initial 3d conformation from SMILES
             input :
@@ -83,7 +82,7 @@ class DockingVina(object):
                                          stderr=subprocess.STDOUT,
                                          timeout=self.timeout_gen3d, universal_newlines=True)
 
-    def docking(self, receptor_file, ligand_mol_file, ligand_pdbqt_file, docking_pdbqt_file):
+    def docking(self, receptor_file, ligand_mol_file, ligand_pdbqt_file, docking_pdbqt_file):#vina对接
         """
             run_docking program using subprocess
             input :
@@ -94,9 +93,11 @@ class DockingVina(object):
             output :
                 affinity list for a input molecule
         """
-        ms = list(pybel.readfile("mol", ligand_mol_file))
+        #pybel:openbabel的python接口
+        ms = list(pybel.readfile("mol", ligand_mol_file))#配体
         m = ms[0]
         m.write("pdbqt", ligand_pdbqt_file, overwrite=True)
+        #run_line    vina_program 调用
         run_line = '%s --receptor %s --ligand %s --out %s' % (self.vina_program,
                                                               receptor_file, ligand_pdbqt_file, docking_pdbqt_file)
         run_line += ' --center_x %s --center_y %s --center_z %s' % (self.box_center)
@@ -104,6 +105,7 @@ class DockingVina(object):
         run_line += ' --cpu %d' % (self.num_cpu_dock)
         run_line += ' --num_modes %d' % (self.num_modes)
         run_line += ' --exhaustiveness %d ' % (self.exhaustiveness)
+        #subprocess.check_output:运行命令并返回输出
         result = subprocess.check_output(run_line.split(),
                                          stderr=subprocess.STDOUT,
                                          timeout=self.timeout_dock, universal_newlines=True)
@@ -128,7 +130,7 @@ class DockingVina(object):
             affinity_list += [affinity]
         return affinity_list
 
-    def creator(self, q, data, num_sub_proc):
+    def creator(self, q, data, num_sub_proc):#
         """
             put data to queue
             input: queue
