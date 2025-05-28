@@ -22,3 +22,32 @@ python GA_llm_modified_second.py --output_dir output_524_secondest_0 --LipinskiS
 526执行
 #######GA_llm_rga.py
 python GA_llm_rga.py --output_dir output_rga --top_mols_to_seed_next_generation 50 --diversity_mols_to_seed_first_generation 50 --diversity_seed_depreciation_per_gen 10 --LipinskiStrictFilter --parallel 
+
+528执行
+#####GA_llm_rga.py
+python GA_llm_rga.py  --output_dir output_rga_528 --parallel --top_mols_to_seed_next_generati
+on 50 --diversity_mols_to_seed_first_generation 50 --diversity_seed_depreciation_per_gen 10 --LipinskiStrictFilter
+
+#多目标
+test_multi_objective.py
+###多目标执行文件
+#####GA_llm_rga.py
+python GA_llm_rga.py --output_dir output_528 --parallel --LipinskiStrictFilter
+多目标执行：
+python GA_llm_rga.py \
+    --output_dir output_rga_528_mutli \
+    --top_mols_to_seed_next_generation 10 \
+    --diversity_mols_to_seed_first_generation 10 \
+    --diversity_seed_depreciation_per_gen 2 \
+    --LipinskiStrictFilter \
+    --parallel \
+    --use_multi_objective
+单目标执行
+python GA_llm_rga.py \
+    --output_dir output_rga_528_single \
+    --top_mols_to_seed_next_generation 10 \
+    --diversity_mols_to_seed_first_generation 10 \
+    --diversity_seed_depreciation_per_gen 2 \
+    --LipinskiStrictFilter \
+    --parallel \
+    --use_single_objective

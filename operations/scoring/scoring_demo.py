@@ -180,6 +180,32 @@ def calculate_diversity(mols):
     diversity = 1.0 - average_similarity
     return diversity
 
+def calculate_top100_diversity(mols):
+    """Calculates diversity for top 100 molecules based on Morgan fingerprints and Tanimoto similarity."""
+    if len(mols) < 2:
+        return 0.0
+    
+    # 取前100个分子（如果不足100个则取全部）
+    top_mols = mols[:min(100, len(mols))]
+    
+    fps = [GetMorganFingerprintAsBitVect(m, 2, nBits=2048) for m in top_mols]
+    
+    sum_similarity = 0
+    num_pairs = 0
+    
+    for i in range(len(fps)):
+        for j in range(i + 1, len(fps)):
+            similarity = DataStructs.TanimotoSimilarity(fps[i], fps[j])
+            sum_similarity += similarity
+            num_pairs += 1
+            
+    if num_pairs == 0:
+        return 0.0 
+        
+    average_similarity = sum_similarity / num_pairs
+    diversity = 1.0 - average_similarity
+    return diversity
+
 def calculate_qed_scores(mols):
     """Calculates QED (0-1范围) for a list of RDKit Mol objects."""
     qed_scores = []
@@ -213,6 +239,64 @@ def calculate_sa_scores(mols):
     
     print(f"Successfully calculated SA scores for {len(sa_scores)} out of {len(mols)} molecules.")
     return sa_scores
+
+def calculate_normalized_scores(docking_scores, qed_scores, sa_scores):
+    """
+    根据论文公式计算标准化的DS, QED, SA分数和综合评分y
+    y = DS × QED × SA ∈ [0, 1]
+    其中：
+    - DS = -clip(DS)/20 ∈ [0, 1] (对接得分标准化，clip到[-20, 0]范围)
+    - QED ∈ [0, 1] (QED本身就在0-1范围)
+    - SA = (10 - SA)/9 ∈ [0, 1] (SA得分标准化，原始范围1-10)
+    """
+    normalized_scores = []
+    
+    for i in range(len(docking_scores)):
+        # 标准化对接得分 (越小越好 -> 越大越好)
+        ds_raw = docking_scores[i]
+        ds_clipped = max(-20, min(0, ds_raw))  # clip到[-20, 0]
+        ds_normalized = -ds_clipped / 20  # 转换到[0, 1]，越小的原始分数对应越大的标准化分数
+        
+        # QED已经在[0, 1]范围
+        qed_normalized = qed_scores[i]
+        
+        # 标准化SA得分 (越小越好 -> 越大越好)
+        sa_raw = sa_scores[i]
+        sa_normalized = (10 - sa_raw) / 9  # 转换到[0, 1]，越小的原始分数对应越大的标准化分数
+        
+        # 计算综合评分y
+        y_score = ds_normalized * qed_normalized * sa_normalized
+        
+        normalized_scores.append({
+            'ds_normalized': ds_normalized,
+            'qed_normalized': qed_normalized, 
+            'sa_normalized': sa_normalized,
+            'y_score': y_score,
+            'original_ds': ds_raw,
+            'original_qed': qed_normalized,  # QED原本就是标准化的
+            'original_sa': sa_raw
+        })
+    
+    return normalized_scores
+
+def calculate_y_score_stats(normalized_scores):
+    """计算综合评分y的统计信息"""
+    if not normalized_scores:
+        return None, None, None, None
+    
+    y_scores = [score['y_score'] for score in normalized_scores]
+    
+    # 按y_score降序排序
+    sorted_scores = sorted(y_scores, reverse=True)
+    
+    top1_y = sorted_scores[0] if len(sorted_scores) >= 1 else np.nan
+    top10_y = sorted_scores[:10]
+    top10_mean_y = np.mean(top10_y) if top10_y else np.nan
+    top100_y = sorted_scores[:100] 
+    top100_mean_y = np.mean(top100_y) if top100_y else np.nan
+    all_mean_y = np.mean(y_scores) if y_scores else np.nan
+    
+    return top1_y, top10_mean_y, top100_mean_y, all_mean_y
 
 def print_calculation_results(results):
     """打印计算结果，避免格式问题"""
@@ -274,12 +358,15 @@ def main():
     # 3. Diversity (calculated on valid RDKit molecules from the current population)
     diversity = calculate_diversity(all_mols)
     
-    # 4. QED Scores (计算top 100分子和全部分子)
-    # 先计算全部分子的QED
-    all_qed_scores = calculate_qed_scores(all_mols)
-    mean_all_qed = np.mean(all_qed_scores) if all_qed_scores else np.nan
+    # 4. Diversity (top 100 molecules based on docking scores)
+    if top_mols:
+        # 使用按对接分数排序的top分子计算多样性
+        top100_diversity = calculate_top100_diversity(top_mols)
+    else:
+        # 如果没有对接分数，使用全部分子计算多样性
+        top100_diversity = calculate_diversity(all_mols)
     
-    # 再计算top分子的QED
+    # 5. QED Scores (只计算top 100分子)
     if top_mols:
         # 使用top分子计算QED
         qed_scores = calculate_qed_scores(top_mols)
@@ -287,16 +374,11 @@ def main():
         qed_description = f"Top {top_molecules_count} Mean"
     else:
         # 如果没有top分子，则使用全部分子
-        qed_scores = all_qed_scores
-        mean_qed = mean_all_qed
+        qed_scores = calculate_qed_scores(all_mols)
+        mean_qed = np.mean(qed_scores) if qed_scores else np.nan
         qed_description = "All Molecules Mean"
     
-    # 5. SA Scores (计算top 100分子和全部分子)
-    # 先计算全部分子的SA
-    all_sa_scores = calculate_sa_scores(all_mols)
-    mean_all_sa = np.mean(all_sa_scores) if all_sa_scores else np.nan
-    
-    # 再计算top分子的SA
+    # 6. SA Scores (只计算top 100分子)
     if top_mols:
         # 使用top分子计算SA
         sa_scores = calculate_sa_scores(top_mols)
@@ -304,9 +386,41 @@ def main():
         sa_description = f"Top {top_molecules_count} Mean"
     else:
         # 如果没有top分子，则使用全部分子
-        sa_scores = all_sa_scores
-        mean_sa = mean_all_sa
+        sa_scores = calculate_sa_scores(all_mols)
+        mean_sa = np.mean(sa_scores) if sa_scores else np.nan
         sa_description = "All Molecules Mean"
+
+    # 7. 综合评分y计算 (需要有对接分数、QED和SA的分子)
+    y_score_results = None
+    top1_y = top10_mean_y = top100_mean_y = all_mean_y = np.nan
+    
+    if scored_molecules_smiles and docking_scores:
+        # 获取有对接分数的分子的QED和SA
+        scored_mols, _ = get_rdkit_mols(scored_molecules_smiles)
+        if scored_mols:
+            scored_qed_scores = calculate_qed_scores(scored_mols)
+            scored_sa_scores = calculate_sa_scores(scored_mols)
+            
+            # 确保三个数组长度一致
+            min_length = min(len(docking_scores), len(scored_qed_scores), len(scored_sa_scores))
+            if min_length > 0:
+                trimmed_docking = docking_scores[:min_length]
+                trimmed_qed = scored_qed_scores[:min_length]
+                trimmed_sa = scored_sa_scores[:min_length]
+                
+                # 计算标准化分数和综合评分y
+                normalized_scores = calculate_normalized_scores(trimmed_docking, trimmed_qed, trimmed_sa)
+                top1_y, top10_mean_y, top100_mean_y, all_mean_y = calculate_y_score_stats(normalized_scores)
+                
+                # 保存结果供后续使用（如种子选择）
+                y_score_results = normalized_scores
+                print(f"Successfully calculated Y scores for {len(normalized_scores)} molecules")
+            else:
+                print("Warning: No molecules have all three scores (docking, QED, SA) for Y calculation")
+        else:
+            print("Warning: No valid RDKit molecules found for scored molecules")
+    else:
+        print("Warning: No docking scores available for Y score calculation")
 
     # 安全地处理可能包含特殊字符的文件名
     population_filename = os.path.basename(args.current_population_docked_file)
@@ -339,6 +453,7 @@ def main():
     results += "--------------------------------------------------\n"
     results += "Novelty (vs {}): {:.4f}\n".format(initial_population_filename, novelty)
     results += "Diversity (Internal): {:.4f}\n".format(diversity)
+    results += "Diversity (Top 100): {:.4f}\n".format(top100_diversity)
     results += "--------------------------------------------------\n"
     
     if np.isnan(mean_qed):
@@ -346,21 +461,37 @@ def main():
     else:
         results += "QED - {} Mean: {:.4f}\n".format(qed_description, mean_qed)
         
-    if np.isnan(mean_all_qed):
-        results += "QED - All Molecules Mean: N/A\n"
-    else:
-        results += "QED - All Molecules Mean: {:.4f}\n".format(mean_all_qed)
-        
     if np.isnan(mean_sa):
         results += "SA Score - {} Mean: N/A\n".format(sa_description)
     else:
         results += "SA Score - {} Mean: {:.4f}\n".format(sa_description, mean_sa)
     
-    if np.isnan(mean_all_sa):
-        results += "SA Score - All Molecules Mean: N/A\n"
-    else:
-        results += "SA Score - All Molecules Mean: {:.4f}\n".format(mean_all_sa)
+    results += "--------------------------------------------------\n"
     
+    # 添加综合评分Y的统计信息
+    if np.isnan(top1_y):
+        results += "Y Score (Multi-objective) - Top 1: N/A\n"
+    else:
+        results += "Y Score (Multi-objective) - Top 1: {:.4f}\n".format(top1_y)
+        
+    if np.isnan(top10_mean_y):
+        results += "Y Score (Multi-objective) - Top 10 Mean: N/A\n"
+    else:
+        results += "Y Score (Multi-objective) - Top 10 Mean: {:.4f}\n".format(top10_mean_y)
+        
+    if np.isnan(top100_mean_y):
+        results += "Y Score (Multi-objective) - Top 100 Mean: N/A\n"
+    else:
+        results += "Y Score (Multi-objective) - Top 100 Mean: {:.4f}\n".format(top100_mean_y)
+        
+    if np.isnan(all_mean_y):
+        results += "Y Score (Multi-objective) - All Mean: N/A\n"
+    else:
+        results += "Y Score (Multi-objective) - All Mean: {:.4f}\n".format(all_mean_y)
+    
+    results += "--------------------------------------------------\n"
+    results += "Formula: Y = DS_normalized × QED × SA_normalized\n"
+    results += "Where: DS_norm = -clip(DS)/20, SA_norm = (10-SA)/9\n"
     results += "--------------------------------------------------\n"
     
     print_calculation_results(results)

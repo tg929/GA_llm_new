@@ -71,9 +71,9 @@ def run_decompose(input_file, output_prefix, logger, current_gen_output_dir):
         "-o2", output_file2,
         "-o3", output_file3,
         "-o4", output_file4
-    ]
+    ]    
     logger.info(f"执行分子分解命令: {' '.join(cmd)}")
-    process = subprocess.run(cmd, capture_output=True, text=True)
+    process = subprocess.run(cmd, capture_output=True, text=True)      
 
     if process.returncode != 0:
         logger.error(f"分子分解失败。返回码: {process.returncode}")
@@ -142,9 +142,9 @@ def run_gpt_generation(input_file, output_prefix, gen_num, logger, current_gen_o
             "--input_file", input_file,
             "--device", str(gpu_id), # 使用分配的GPU设备
             "--seed", str(unique_seed) # 使用独特的seed
-        ]
+        ]    
         logger.info(f"执行GPT生成命令: {' '.join(cmd)}")
-        process = subprocess.run(cmd, capture_output=True, text=True)
+        process = subprocess.run(cmd, capture_output=True, text=True)    
 
         if process.returncode != 0:
             logger.error(f"GPT生成失败。返回码: {process.returncode}")
@@ -430,9 +430,10 @@ def calculate_and_print_stats(docking_output, generation_num, logger):
     # 输出到控制台
     print(stats_message)
 
-def select_seeds_for_next_generation(docking_output, seed_output, top_mols, diversity_mols, logger, elitism_mols=1, prev_elite_mols=None):
-    """基于适应度和多样性选择种子分子，支持精英保留机制"""
+def select_seeds_for_next_generation(docking_output, seed_output, top_mols, diversity_mols, logger, elitism_mols=1, prev_elite_mols=None, use_multi_objective=True):
+    """基于适应度和多样性选择种子分子，支持精英保留机制和多目标优化"""
     logger.info(f"开始选择种子分子: 从 {docking_output} 选择 {top_mols} 个适应度种子和 {diversity_mols} 个多样性种子，保留 {elitism_mols} 个精英分子")
+    logger.info(f"使用多目标优化: {use_multi_objective}")
     
     # 读取对接结果
     molecules = []
@@ -453,42 +454,127 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
         logger.warning("对接结果中没有发现有效分数")
         return None
     
-    # 按分数排序（对接分数越小越好）
-    sorted_indices = np.argsort(scores)
-    sorted_molecules = [molecules[i] for i in sorted_indices]
-    sorted_scores = [scores[i] for i in sorted_indices]
+    # 如果启用多目标优化，计算综合评分y
+    if use_multi_objective:
+        logger.info("计算多目标综合评分Y...")
+        try:
+            # 导入评估脚本中的函数
+            import sys
+            sys.path.insert(0, os.path.join(PROJECT_ROOT, "operations", "scoring"))
+            from scoring_demo import get_rdkit_mols, calculate_qed_scores, calculate_sa_scores, calculate_normalized_scores
+            
+            # 转换为RDKit分子对象
+            mols, valid_smiles = get_rdkit_mols(molecules)
+            
+            if len(mols) != len(molecules):
+                logger.warning(f"一些分子无法转换为RDKit对象，从{len(molecules)}减少到{len(mols)}")
+                # 重新对齐分子、SMILES和分数
+                aligned_molecules = []
+                aligned_scores = []
+                for i, mol in enumerate(mols):
+                    if mol is not None:
+                        aligned_molecules.append(valid_smiles[i])
+                        # 找到对应的原始分数
+                        orig_idx = molecules.index(valid_smiles[i])
+                        aligned_scores.append(scores[orig_idx])
+                molecules = aligned_molecules
+                scores = aligned_scores
+            
+            # 计算QED和SA分数
+            qed_scores = calculate_qed_scores(mols)
+            sa_scores = calculate_sa_scores(mols)
+            
+            # 确保长度一致
+            min_length = min(len(scores), len(qed_scores), len(sa_scores))
+            if min_length > 0:
+                trimmed_docking = scores[:min_length]
+                trimmed_qed = qed_scores[:min_length]
+                trimmed_sa = sa_scores[:min_length]
+                trimmed_molecules = molecules[:min_length]
+                
+                # 计算综合评分y
+                normalized_scores = calculate_normalized_scores(trimmed_docking, trimmed_qed, trimmed_sa)
+                
+                # 创建(分子, 对接分数, y分数)的元组列表
+                molecules_with_scores = []
+                for i, norm_score in enumerate(normalized_scores):
+                    molecules_with_scores.append((
+                        trimmed_molecules[i], 
+                        trimmed_docking[i], 
+                        norm_score['y_score']
+                    ))
+                
+                # 按y分数降序排序（y分数越高越好）
+                molecules_with_scores.sort(key=lambda x: x[2], reverse=True)
+                
+                logger.info(f"成功计算{len(molecules_with_scores)}个分子的综合评分Y")
+                logger.info(f"Top 5 Y scores: {[f'{x[2]:.4f}' for x in molecules_with_scores[:5]]}")
+                
+                # 更新排序后的分子和分数
+                sorted_molecules = [x[0] for x in molecules_with_scores]
+                sorted_docking_scores = [x[1] for x in molecules_with_scores]
+                sorted_y_scores = [x[2] for x in molecules_with_scores]
+                
+            else:
+                logger.error("无法计算综合评分，回退到单目标优化")
+                use_multi_objective = False
+                
+        except Exception as e:
+            logger.error(f"多目标评分计算失败: {str(e)}")
+            logger.error("回退到基于对接分数的单目标优化")
+            use_multi_objective = False
+    
+    # 如果未启用多目标优化或计算失败，使用传统的对接分数排序
+    if not use_multi_objective:
+        # 按对接分数排序（对接分数越小越好）
+        sorted_indices = np.argsort(scores)
+        sorted_molecules = [molecules[i] for i in sorted_indices]
+        sorted_docking_scores = [scores[i] for i in sorted_indices]
+        sorted_y_scores = None
     
     # 获取当前代得分最好的分子
     current_best_mol = sorted_molecules[0]
-    current_best_score = sorted_scores[0]
+    if use_multi_objective and sorted_y_scores:
+        current_best_score = sorted_y_scores[0]  # 使用y分数
+        score_type = "Y score"
+    else:
+        current_best_score = sorted_docking_scores[0]  # 使用对接分数
+        score_type = "docking score"
     
     # 如果有上一代的精英分子，比较并选择最好的
     if prev_elite_mols:
         prev_best_mol = list(prev_elite_mols.keys())[0]
         prev_best_score = list(prev_elite_mols.values())[0]
         
-        # 比较当前代最好分子和上一代精英分子
-        if current_best_score < prev_best_score:
+        # 注意：这里的比较逻辑需要根据分数类型调整
+        if use_multi_objective and sorted_y_scores:
+            # Y分数越大越好
+            is_better = current_best_score > prev_best_score
+        else:
+            # 对接分数越小越好
+            is_better = current_best_score < prev_best_score
+        
+        if is_better:
             # 如果当前代有更好的分子，使用当前代的
             new_elite_mols = {current_best_mol: current_best_score}
             logger.info(f"发现更好的分子，更新精英分子:")
-            logger.info(f"上一代精英分子: {prev_best_mol} (得分: {prev_best_score})")
-            logger.info(f"新的精英分子: {current_best_mol} (得分: {current_best_score})")
+            logger.info(f"上一代精英分子: {prev_best_mol} ({score_type}: {prev_best_score:.4f})")
+            logger.info(f"新的精英分子: {current_best_mol} ({score_type}: {current_best_score:.4f})")
         else:
             # 如果上一代的精英分子更好，继续保留
             new_elite_mols = {prev_best_mol: prev_best_score}
             logger.info(f"保留上一代精英分子:")
-            logger.info(f"当前代最好分子: {current_best_mol} (得分: {current_best_score})")
-            logger.info(f"保留的精英分子: {prev_best_mol} (得分: {prev_best_score})")
+            logger.info(f"当前代最好分子: {current_best_mol} ({score_type}: {current_best_score:.4f})")
+            logger.info(f"保留的精英分子: {prev_best_mol} ({score_type}: {prev_best_score:.4f})")
     else:
         # 第一代，直接使用当前代最好的分子作为精英分子
         new_elite_mols = {current_best_mol: current_best_score}
-        logger.info(f"第一代精英分子: {current_best_mol} (得分: {current_best_score})")
+        logger.info(f"第一代精英分子: {current_best_mol} ({score_type}: {current_best_score:.4f})")
     
     # 从剩余分子中选择适应度种子（排除已选择的精英分子）
     remaining_molecules = [mol for mol in sorted_molecules if mol not in new_elite_mols]
     fitness_seeds = remaining_molecules[:top_mols]
-    logger.info(f"已选择 {len(fitness_seeds)} 个适应度种子")
+    logger.info(f"已选择 {len(fitness_seeds)} 个适应度种子 (基于{score_type})")
     
     # 选择多样性种子
     diversity_seeds = []
@@ -537,6 +623,7 @@ def select_seeds_for_next_generation(docking_output, seed_output, top_mols, dive
             f.write(f"{mol}\n")
     
     logger.info(f"种子选择完成，共选择 {len(all_seeds)} 个分子，保存至: {seed_output}")
+    logger.info(f"优化方式: {'多目标优化 (基于Y score)' if use_multi_objective and sorted_y_scores else '单目标优化 (基于docking score)'}")
     return seed_output, new_elite_mols
 
 def limit_population_size(input_file, max_size, output_file=None):
@@ -580,13 +667,13 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
         seed_output = os.path.join(output_base, f"generation_{generation_num}_seeds.smi")
         seed_output, new_elite_mols = select_seeds_for_next_generation(
             docking_output, seed_output, args.top_mols_to_seed_next_generation, 
-            diversity_mols, logger, args.elitism_mols_to_next_generation
+            diversity_mols, logger, args.elitism_mols_to_next_generation, None, args.use_multi_objective
         )
 
         # 对第0代的对接结果进行评估
         evaluation_output_file = os.path.join(output_base, "generation_0_evaluation_metrics.txt")
         run_scoring_evaluation(docking_output, args.initial_population, evaluation_output_file, logger)
-        
+
         return seed_output, new_elite_mols
     else:
         # 1. 读取上一代seed文件
@@ -656,7 +743,7 @@ def run_evolution(generation_num, args, logger, prev_elite_mols=None):
         seed_output = os.path.join(output_base, f"generation_{generation_num}_seeds.smi")
         seed_output, new_elite_mols = select_seeds_for_next_generation(
             docking_output, seed_output, args.top_mols_to_seed_next_generation, 
-            diversity_mols, logger, args.elitism_mols_to_next_generation, prev_elite_mols
+            diversity_mols, logger, args.elitism_mols_to_next_generation, prev_elite_mols, args.use_multi_objective
         )
 
         # 9. 对当前代的对接结果进行评估
@@ -742,7 +829,7 @@ def run_evolution_for_target(target, args, generations):
         seed_output = os.path.join(gen0_output_dir, "generation_0_seeds.smi")
         seed_output, elite_mols = select_seeds_for_next_generation(
             docking_output, seed_output, target_args.top_mols_to_seed_next_generation, 
-            diversity_mols, logger, target_args.elitism_mols_to_next_generation
+            diversity_mols, logger, target_args.elitism_mols_to_next_generation, None, target_args.use_multi_objective
         )
         
         # 对第0代的对接结果进行评估
@@ -849,7 +936,7 @@ def run_evolution_for_target(target, args, generations):
             seed_output = os.path.join(gen_output_dir, f"generation_{gen}_seeds.smi")
             seed_output, elite_mols = select_seeds_for_next_generation(
                 docking_output, seed_output, target_args.top_mols_to_seed_next_generation, 
-                diversity_mols, logger, target_args.elitism_mols_to_next_generation, elite_mols
+                diversity_mols, logger, target_args.elitism_mols_to_next_generation, elite_mols, target_args.use_multi_objective
             )
             
             # 9. 对当前代的对接结果进行评估
@@ -936,7 +1023,7 @@ def main():
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='GA_llm_rga - 基于多受体对接的分子进化与生成流程')
     
-    # 检查psutil库依赖 
+    # 检查psutil库依赖
     # try:
     #     import psutil
     # except ImportError:
@@ -982,6 +1069,10 @@ def main():
                        help='每代多样性种子数量的递减值')
     parser.add_argument('--elitism_mols_to_next_generation', type=int, default=1,
                        help='每代保留的精英分子数量，这些分子将直接进入下一代而不进行进化操作')
+    parser.add_argument('--use_multi_objective', action='store_true', default=True,
+                       help='是否使用多目标优化。启用时，种子选择将基于综合评分Y (DS×QED×SA)，而不是单纯的对接分数')
+    parser.add_argument('--use_single_objective', action='store_true', default=False,
+                       help='强制使用单目标优化（仅基于对接分数），即使默认启用了多目标优化')
     
     # 并行处理参数
     parser.add_argument('--number_of_processors', '-p', type=int, default=-1,
@@ -1017,6 +1108,15 @@ def main():
                         help='添加自定义过滤器，需要提供列表格式：[[过滤器1名称, 过滤器1路径], [过滤器2名称, 过滤器2路径]]')
     
     args = parser.parse_args()
+    
+    # 处理多目标优化参数逻辑
+    if args.use_single_objective:
+        args.use_multi_objective = False
+        print("已强制启用单目标优化模式（仅基于对接分数）")
+    elif args.use_multi_objective:
+        print("已启用多目标优化模式（基于综合评分Y = DS×QED×SA）")
+    else:
+        print("使用单目标优化模式（仅基于对接分数）")
     
     # 创建基础输出目录
     os.makedirs(args.output_dir, exist_ok=True)
