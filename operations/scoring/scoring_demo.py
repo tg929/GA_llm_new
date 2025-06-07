@@ -12,61 +12,39 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 # 完全重写SA Score导入部分
-# RDKit中的SA Score计算通常位于rdkit.Contrib.SA_score.sascorer模块
+# 简化SA Score导入逻辑，直接使用项目中的sascorer模块
 SA_SCORE_CALCULATOR = None
 try:
-    # 尝试1：常规路径
-    from rdkit.Contrib.SA_score import sascorer
+    # 首先尝试直接从sascorer模块导入(这是最常见的情况)
+    import sascorer
     SA_SCORE_CALCULATOR = sascorer.calculateScore
-    print("Successfully imported SA Score calculator from rdkit.Contrib.SA_score.sascorer")
+    print("成功导入SA计算函数 (从sascorer模块)")
 except ImportError:
     try:
-        # 尝试2：直接从sascorer模块导入
-        import sascorer
+        # 如果失败，尝试从rdkit.Contrib路径导入
+        from rdkit.Contrib.SA_score import sascorer
         SA_SCORE_CALCULATOR = sascorer.calculateScore
-        print("Successfully imported SA Score calculator from sascorer module")
+        print("成功导入SA计算函数 (从rdkit.Contrib.SA_score)")
     except ImportError:
         try:
-            # 尝试3：从rdkit.Chem导入(某些版本可能放在这里)
+            # 最后尝试从rdkit.Chem导入
             from rdkit.Chem import sascorer
             SA_SCORE_CALCULATOR = sascorer.calculateScore
-            print("Successfully imported SA Score calculator from rdkit.Chem.sascorer")
+            print("成功导入SA计算函数 (从rdkit.Chem.sascorer)")
         except ImportError:
-            print("Warning: SA_Score module not found. SA scores will not be calculated.")
+            print("警告: SA_Score模块未找到。SA得分将不会被计算。")
             SA_SCORE_CALCULATOR = None
 
-# 导入已有的SA Score计算模块
-try:
-    # 首先尝试导入项目中现有的SA Score计算模块
-    from fragment_GPT.utils.chem_utils import get_sa, get_qed
-    print("成功从fragment_GPT.utils.chem_utils导入SA和QED计算函数")
-    # 为了保持1-10的SA分数范围，我们需要逆转get_sa函数的计算
-    def calculate_sa_original(mol):
-        # get_sa返回(10 - sascorer.calculateScore(mol)) / 9，是0-1范围
-        # 我们需要的是原始的sascorer.calculateScore(mol)，是1-10范围
-        sa_normalized = get_sa(mol)  # 0-1范围的值
-        sa_original = 10 - (sa_normalized * 9)  # 转回1-10范围
-        return sa_original
-except ImportError:
-    print("尝试导入fragment_GPT.utils.chem_utils失败，使用备用方法")
-    # 备用方法：直接导入sascorer
-    try:
-        # 尝试1：项目根目录下的utils
-        sys.path.append(os.path.join(PROJECT_ROOT, 'fragment_GPT/utils'))
-        import sascorer
-        def calculate_sa_original(mol):
-            return sascorer.calculateScore(mol)
-        print("成功从项目的sascorer模块导入SA计算函数")
-    except ImportError:
+# 定义SA计算函数
+def calculate_sa_original(mol):
+    """计算分子的SA得分 (1-10范围)"""
+    if SA_SCORE_CALCULATOR:
         try:
-            # 尝试2：RDKit的SA Score
-            from rdkit.Contrib.SA_score import sascorer
-            def calculate_sa_original(mol):
-                return sascorer.calculateScore(mol)
-            print("成功从rdkit.Contrib.SA_score导入SA计算函数")
-        except ImportError:
-            print("警告:无法导入任何SA Score计算模块,SA分数将不可用")
-            calculate_sa_original = None
+            return SA_SCORE_CALCULATOR(mol)
+        except Exception as e:
+            print(f"计算SA得分失败: {str(e)}")
+            return None
+    return None
 
 def load_smiles_from_file(filepath):
     """Loads SMILES from a file, one SMILES per line."""
@@ -233,70 +211,16 @@ def calculate_sa_scores(mols):
         try:
             # 使用我们定义的calculate_sa_original函数，确保结果在1-10范围内
             sa_score = calculate_sa_original(mol)
-            sa_scores.append(sa_score)
+            # 只添加非None值，如果是None则跳过该分子
+            if sa_score is not None:
+                sa_scores.append(sa_score)
+            else:
+                print(f"Warning: SA score calculation returned None for a molecule, skipping.")
         except Exception as e:
             print(f"Warning: Could not calculate SA score for a molecule. Error: {str(e)}")
     
     print(f"Successfully calculated SA scores for {len(sa_scores)} out of {len(mols)} molecules.")
     return sa_scores
-
-def calculate_normalized_scores(docking_scores, qed_scores, sa_scores):
-    """
-    根据论文公式计算标准化的DS, QED, SA分数和综合评分y
-    y = DS × QED × SA ∈ [0, 1]
-    其中：
-    - DS = -clip(DS)/20 ∈ [0, 1] (对接得分标准化，clip到[-20, 0]范围)
-    - QED ∈ [0, 1] (QED本身就在0-1范围)
-    - SA = (10 - SA)/9 ∈ [0, 1] (SA得分标准化，原始范围1-10)
-    """
-    normalized_scores = []
-    
-    for i in range(len(docking_scores)):
-        # 标准化对接得分 (越小越好 -> 越大越好)
-        ds_raw = docking_scores[i]
-        ds_clipped = max(-20, min(0, ds_raw))  # clip到[-20, 0]
-        ds_normalized = -ds_clipped / 20  # 转换到[0, 1]，越小的原始分数对应越大的标准化分数
-        
-        # QED已经在[0, 1]范围
-        qed_normalized = qed_scores[i]
-        
-        # 标准化SA得分 (越小越好 -> 越大越好)
-        sa_raw = sa_scores[i]
-        sa_normalized = (10 - sa_raw) / 9  # 转换到[0, 1]，越小的原始分数对应越大的标准化分数
-        
-        # 计算综合评分y
-        y_score = ds_normalized * qed_normalized * sa_normalized
-        
-        normalized_scores.append({
-            'ds_normalized': ds_normalized,
-            'qed_normalized': qed_normalized, 
-            'sa_normalized': sa_normalized,
-            'y_score': y_score,
-            'original_ds': ds_raw,
-            'original_qed': qed_normalized,  # QED原本就是标准化的
-            'original_sa': sa_raw
-        })
-    
-    return normalized_scores
-
-def calculate_y_score_stats(normalized_scores):
-    """计算综合评分y的统计信息"""
-    if not normalized_scores:
-        return None, None, None, None
-    
-    y_scores = [score['y_score'] for score in normalized_scores]
-    
-    # 按y_score降序排序
-    sorted_scores = sorted(y_scores, reverse=True)
-    
-    top1_y = sorted_scores[0] if len(sorted_scores) >= 1 else np.nan
-    top10_y = sorted_scores[:10]
-    top10_mean_y = np.mean(top10_y) if top10_y else np.nan
-    top100_y = sorted_scores[:100] 
-    top100_mean_y = np.mean(top100_y) if top100_y else np.nan
-    all_mean_y = np.mean(y_scores) if y_scores else np.nan
-    
-    return top1_y, top10_mean_y, top100_mean_y, all_mean_y
 
 def print_calculation_results(results):
     """打印计算结果，避免格式问题"""
@@ -390,38 +314,6 @@ def main():
         mean_sa = np.mean(sa_scores) if sa_scores else np.nan
         sa_description = "All Molecules Mean"
 
-    # 7. 综合评分y计算 (需要有对接分数、QED和SA的分子)
-    y_score_results = None
-    top1_y = top10_mean_y = top100_mean_y = all_mean_y = np.nan
-    
-    if scored_molecules_smiles and docking_scores:
-        # 获取有对接分数的分子的QED和SA
-        scored_mols, _ = get_rdkit_mols(scored_molecules_smiles)
-        if scored_mols:
-            scored_qed_scores = calculate_qed_scores(scored_mols)
-            scored_sa_scores = calculate_sa_scores(scored_mols)
-            
-            # 确保三个数组长度一致
-            min_length = min(len(docking_scores), len(scored_qed_scores), len(scored_sa_scores))
-            if min_length > 0:
-                trimmed_docking = docking_scores[:min_length]
-                trimmed_qed = scored_qed_scores[:min_length]
-                trimmed_sa = scored_sa_scores[:min_length]
-                
-                # 计算标准化分数和综合评分y
-                normalized_scores = calculate_normalized_scores(trimmed_docking, trimmed_qed, trimmed_sa)
-                top1_y, top10_mean_y, top100_mean_y, all_mean_y = calculate_y_score_stats(normalized_scores)
-                
-                # 保存结果供后续使用（如种子选择）
-                y_score_results = normalized_scores
-                print(f"Successfully calculated Y scores for {len(normalized_scores)} molecules")
-            else:
-                print("Warning: No molecules have all three scores (docking, QED, SA) for Y calculation")
-        else:
-            print("Warning: No valid RDKit molecules found for scored molecules")
-    else:
-        print("Warning: No docking scores available for Y score calculation")
-
     # 安全地处理可能包含特殊字符的文件名
     population_filename = os.path.basename(args.current_population_docked_file)
     initial_population_filename = os.path.basename(args.initial_population_file)
@@ -466,32 +358,6 @@ def main():
     else:
         results += "SA Score - {} Mean: {:.4f}\n".format(sa_description, mean_sa)
     
-    results += "--------------------------------------------------\n"
-    
-    # 添加综合评分Y的统计信息
-    if np.isnan(top1_y):
-        results += "Y Score (Multi-objective) - Top 1: N/A\n"
-    else:
-        results += "Y Score (Multi-objective) - Top 1: {:.4f}\n".format(top1_y)
-        
-    if np.isnan(top10_mean_y):
-        results += "Y Score (Multi-objective) - Top 10 Mean: N/A\n"
-    else:
-        results += "Y Score (Multi-objective) - Top 10 Mean: {:.4f}\n".format(top10_mean_y)
-        
-    if np.isnan(top100_mean_y):
-        results += "Y Score (Multi-objective) - Top 100 Mean: N/A\n"
-    else:
-        results += "Y Score (Multi-objective) - Top 100 Mean: {:.4f}\n".format(top100_mean_y)
-        
-    if np.isnan(all_mean_y):
-        results += "Y Score (Multi-objective) - All Mean: N/A\n"
-    else:
-        results += "Y Score (Multi-objective) - All Mean: {:.4f}\n".format(all_mean_y)
-    
-    results += "--------------------------------------------------\n"
-    results += "Formula: Y = DS_normalized × QED × SA_normalized\n"
-    results += "Where: DS_norm = -clip(DS)/20, SA_norm = (10-SA)/9\n"
     results += "--------------------------------------------------\n"
     
     print_calculation_results(results)
